@@ -1,0 +1,99 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── 15market brand tokens — LIGHT ─────────────────────────────────────────── */
+:root {
+  --brand:          #52b36e;   /* logo green */
+  --brand-dark:     #3a8f54;   /* hover / deeper */
+  --brand-light:    #d6f0de;   /* tinted backgrounds */
+
+  --bg:             #f5faf6;
+  --bg-gradient:    linear-gradient(180deg, #f0f8f2 0%, #f8fdf9 55%, #f2faf5 100%);
+  --surface:        rgba(255,255,255,0.78);
+  --surface-strong: rgba(255,255,255,0.94);
+  --surface-muted:  #edf7f0;
+
+  --ink:            #0f2d1c;
+  --ink-2:          #1e3d2a;
+  --muted:          #4a6357;
+  --subtle:         #7a9488;
+  --border:         rgba(15,45,28,0.10);
+  --border-strong:  rgba(15,45,28,0.30);
+
+  --accent:         #52b36e;
+  --accent-hover:   #3a8f54;
+  --accent-dim:     rgba(82,179,110,0.14);
+
+  --success:        #2e9e5a;
+  --danger:         #c0392b;
+  --ngn:            #008751;
+
+  --pill-bg:        rgba(255,255,255,0.72);
+  --pill-border:    rgba(255,255,255,0.80);
+  --glass-bg:       rgba(255,255,255,0.68);
+  --glass-border:   rgba(255,255,255,0.72);
+  --glass-soft-bg:  rgba(255,255,255,0.50);
+  --glass-soft-border: rgba(255,255,255,0.58);
+  --divider:        rgba(15,45,28,0.07);
+  --arrow-bg:       rgba(15,45,28,0.05);
+
+  --toggle-track:   rgba(15,45,28,0.12);
+}
+
+/* ── 15market brand tokens — DARK (pure neutral, accent stays green) ─────────── */
+:root.dark {
+  --bg:             #0a0a0a;
+  --bg-gradient:    linear-gradient(180deg, #0a0a0a 0%, #111111 55%, #0d0d0d 100%);
+  --surface:        rgba(28,28,28,0.92);
+  --surface-strong: rgba(22,22,22,0.97);
+  --surface-muted:  #161616;
+
+  --ink:            #f0f0f0;
+  --ink-2:          #c8c8c8;
+  --muted:          #888888;
+  --subtle:         #555555;
+  --border:         rgba(255,255,255,0.08);
+  --border-strong:  rgba(255,255,255,0.20);
+
+  --accent:         #52b36e;   /* brand green stays — it's the only color */
+  --accent-hover:   #6acb84;
+  --accent-dim:     rgba(82,179,110,0.15);
+
+  --success:        #52b36e;
+  --danger:         #e05c5c;
+  --ngn:            #52b36e;
+
+  --pill-bg:        rgba(38,38,38,0.90);
+  --pill-border:    rgba(255,255,255,0.10);
+  --glass-bg:       rgba(24,24,24,0.82);
+  --glass-border:   rgba(255,255,255,0.09);
+  --glass-soft-bg:  rgba(32,32,32,0.70);
+  --glass-soft-border: rgba(255,255,255,0.08);
+  --divider:        rgba(255,255,255,0.06);
+  --arrow-bg:       rgba(255,255,255,0.06);
+
+  --toggle-track:   rgba(255,255,255,0.10);
+}
+
+* { box-sizing: border-box; }
+
+html { transition: background-color 0.25s, color 0.25s; }
+
+body {
+  margin: 0;
+  font-family: 'DM Sans', sans-serif;
+  min-height: 100dvh;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+.display { font-family: 'Space Grotesk', sans-serif; letter-spacing: -0.03em; }
+.mono    { font-family: 'JetBrains Mono', Menlo, monospace; }
+
+/* ── Sonner toast dark-mode fix ─────────────────────────────────────────────── */
+:root.dark [data-sonner-toaster] {
+  --normal-bg:    #1e1e1e;
+  --normal-border:rgba(255,255,255,0.10);
+  --normal-text:  #f0f0f0;
+}

@@ -1,0 +1,36 @@
+# ─── Environment / secrets ────────────────────────────────────────────────────
+.env
+.env.*
+!env.example
+
+# ─── Circle credentials ───────────────────────────────────────────────────────
+.circle/
+
+# ─── Order store (runtime data, not source) ───────────────────────────────────
+.orders/
+
+# ─── Dependencies ─────────────────────────────────────────────────────────────
+node_modules/
+
+# ─── Build output ─────────────────────────────────────────────────────────────
+dist/
+build/
+
+# ─── Foundry / contracts ──────────────────────────────────────────────────────
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+
+# ─── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+/tmp/
+
+# ─── Arc Studio runtime files ─────────────────────────────────────────────────
+traces.jsonl
+console.jsonl
+
+# ─── OS / editor ──────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
