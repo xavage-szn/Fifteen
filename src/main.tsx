@@ -15,18 +15,13 @@ import './console-capture'
 
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { WagmiProvider } from 'wagmi'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Toaster } from 'sonner'
-import { config } from './config'
 import App from './App'
 import AdminApp from './admin/AdminApp'
 import './index.css'
 
 // Simple client-side route: /admin goes to admin console, everything else to App
 const isAdmin = window.location.pathname.startsWith('/admin')
-
-const queryClient = new QueryClient()
 
 // Studio logo SVG
 const StudioLogo = () => (
@@ -71,13 +66,11 @@ const StudioWatermark = () => (
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <WagmiProvider config={config}>
-      <QueryClientProvider client={queryClient}>
-        {isAdmin ? <AdminApp /> : <App />}
-        {!isAdmin && <StudioWatermark />}
-        <Toaster position="top-center" />
-      </QueryClientProvider>
-    </WagmiProvider>
+    <>
+      {isAdmin ? <AdminApp /> : <App />}
+      {!isAdmin && <StudioWatermark />}
+      <Toaster position="top-center" />
+    </>
   </StrictMode>,
 )
 
