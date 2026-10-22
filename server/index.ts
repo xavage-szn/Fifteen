@@ -829,7 +829,7 @@ app.get('/admin/stats', async (c) => {
 
 // GET /api/balance/:address — proxy balanceOf through the server
 // (avoids any browser-side CORS / network restrictions reaching Arc RPC directly)
-app.get('/api/balance/:address', async (c) => {
+app.get('/balance/:address', async (c) => {
   const addr = c.req.param('address')
   if (!/^0x[0-9a-fA-F]{40}$/i.test(addr)) return c.json({ error: 'Invalid address' }, 400)
   try {
