@@ -3,7 +3,7 @@ import { createPublicClient, http, erc20Abi } from 'viem'
 
 // Arc Testnet constants — inlined because this repo has no @/onchain-facts module
 const ARC_TESTNET_RPC      = 'https://rpc.testnet.arc.io'
-const USDC_ADDRESS         = '0x4D1C97fF68c57DbFEc40B80423208e26a3FbbF79' as const
+const USDC_ADDRESS         = '0x3600000000000000000000000000000000000000' as const
 const USDC_DECIMALS        = 6
 
 const arcViemChain = {

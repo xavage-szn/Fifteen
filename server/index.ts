@@ -51,7 +51,7 @@ const ARC_CHAIN_DEF = {
 function requireChain(_id: number) { return ARC_CHAIN_DEF }
 function getUsdc(_id: number) {
   // arc-studio-allow-onchain-literal
-  return { address: '0x4D1C97fF68c57DbFEc40B80423208e26a3FbbF79', decimals: 6 }
+  return { address: '0x3600000000000000000000000000000000000000', decimals: 6 }
 }
 
 const app = new Hono()
