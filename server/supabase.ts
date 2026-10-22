@@ -8,13 +8,17 @@ import { createClient } from '@supabase/supabase-js'
 const url    = process.env.SUPABASE_URL          ?? ''
 const secret = process.env.SUPABASE_SECRET_KEY   ?? ''
 
-if (!url || !secret) {
+const hasSupabase = !!(url && secret)
+
+if (!hasSupabase) {
   console.warn('[supabase] SUPABASE_URL or SUPABASE_SECRET_KEY not set — DB indexing disabled')
 }
 
-export const db = createClient(url, secret, {
-  auth: { persistSession: false, autoRefreshToken: false },
-})
+// Only instantiate the client when credentials are present — createClient throws
+// on an empty URL even if you never call it.
+export const db = hasSupabase
+  ? createClient(url, secret, { auth: { persistSession: false, autoRefreshToken: false } })
+  : (null as unknown as ReturnType<typeof createClient>)
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

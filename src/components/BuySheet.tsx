@@ -107,6 +107,10 @@ export default function BuySheet({
     }
   }, [walletAddress])
 
+  // Tracks whether the Flutterwave callback has already fired with a
+  // successful/completed status so onclose doesn't reset a live flow.
+  const callbackFired = useRef(false)
+
   const sdkLoaded = useRef(false)
   const loadFlwSdk = useCallback((): Promise<void> => {
     if (sdkLoaded.current) return Promise.resolve()
@@ -168,6 +172,9 @@ export default function BuySheet({
       }).FlutterwaveCheckout
       if (typeof checkout !== 'function') throw new Error('Flutterwave checkout SDK not ready')
 
+      // Reset the callback-fired guard each time a new checkout opens.
+      callbackFired.current = false
+
       checkout({
         public_key:      FLW_PUBLIC_KEY,
         tx_ref:          ref,
@@ -186,15 +193,25 @@ export default function BuySheet({
           logo:        'https://cryptologos.cc/logos/usd-coin-usdc-logo.png',
         },
         callback: (response: { status: string; tx_ref: string; transaction_id?: number }) => {
+          // Guard: never fire verify twice for the same checkout session.
+          if (callbackFired.current) return
           if (response.status === 'successful' || response.status === 'completed') {
+            callbackFired.current = true
             void verifyAndDeliver(ref, rawUsdc, token, response.transaction_id)
           } else {
+            // Don't treat non-successful callbacks as fatal errors; the user
+            // may simply have closed/cancelled before completing — onclose handles that.
             setErrorMsg(`Payment ${response.status} — please try again`)
             setStep('error')
           }
         },
         onclose: () => {
-          setStep(prev => (prev === 'paying' ? 'confirm' : prev))
+          // Only reset to 'confirm' if no successful callback has been received.
+          // If callback already fired (payment went through), leave the step alone
+          // so verifyAndDeliver can finish delivering USDC.
+          if (!callbackFired.current) {
+            setStep(prev => (prev === 'paying' ? 'confirm' : prev))
+          }
         },
       })
     } catch (err: unknown) {
@@ -204,6 +221,7 @@ export default function BuySheet({
   }, [canPay, walletAddress, parsedNgn, customerEmail, loadFlwSdk, usdcRate, verifyAndDeliver])
 
   const handleClose = () => {
+    callbackFired.current = false
     setStep('confirm')
     setErrorMsg('')
     setTxHash(undefined)

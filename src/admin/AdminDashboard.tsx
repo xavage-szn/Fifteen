@@ -206,21 +206,16 @@ export default function AdminDashboard({ token, onSignOut }: { token: string; on
     return () => { void supabase.removeChannel(ch) }
   }, [fetchTx, fetchStats])
 
-  // ── Load on tab switch ────────────────────────────────────────────────────
-  // Use a ref to run the fetch imperatively on tab change without triggering
-  // the set-state-in-effect rule — the fetch itself is async and updates state
-  // only when the server responds, not synchronously inside the effect.
-  const tabRef = useRef<Tab>('transactions')
+  // ── Load on mount and tab/page/filter change ─────────────────────────────
   useEffect(() => {
-    if (tabRef.current === tab) return
-    tabRef.current = tab
     const run = async () => {
       if (tab === 'transactions') await fetchTx()
       if (tab === 'analytics')    await fetchStats()
       if (tab === 'disputes')     { await fetchDisputes(); await fetchStats() }
     }
     void run()
-  })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, page, statusFilter])
 
   // Fetch logs when a transaction is selected — triggered imperatively from the
   // click handler below, not from a useEffect, to avoid set-state-in-effect.
