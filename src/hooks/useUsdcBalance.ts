@@ -1,44 +1,32 @@
 import { useState, useEffect, useRef } from 'react'
 import { createPublicClient, http, erc20Abi } from 'viem'
-import { getUsdc, requireChain } from '@/onchain-facts'
-import { Amount } from '@/onchain-money'
-import { ARC_TESTNET_CHAIN_ID } from '@/constants'
 
-// Build a viem public client pointed directly at the working Arc Testnet RPC.
-// We bypass wagmi's built-in arcTestnet chain definition because its bundled
-// RPC URL (rpc.testnet.arc.network) is unreachable — our registry has the
-// correct one (rpc.testnet.arc.io).
-const arcChain = requireChain(ARC_TESTNET_CHAIN_ID)
-const usdc     = getUsdc(ARC_TESTNET_CHAIN_ID)
+// Arc Testnet constants — inlined because this repo has no @/onchain-facts module
+const ARC_TESTNET_RPC      = 'https://rpc.testnet.arc.io'
+const USDC_ADDRESS         = '0x4D1C97fF68c57DbFEc40B80423208e26a3FbbF79' as const
+const USDC_DECIMALS        = 6
 
 const arcViemChain = {
-  id:             arcChain.chainId,
-  name:           arcChain.name,
-  nativeCurrency: {
-    name:     arcChain.nativeCurrency.symbol,
-    symbol:   arcChain.nativeCurrency.symbol,
-    decimals: arcChain.nativeCurrency.decimals,
-  },
-  rpcUrls: { default: { http: [arcChain.rpcUrls[0]] } },
+  id:             5042002,
+  name:           'Arc Testnet',
+  nativeCurrency: { name: 'USDC', symbol: 'USDC', decimals: 18 },
+  rpcUrls:        { default: { http: [ARC_TESTNET_RPC] } },
 } as const
 
 const publicClient = createPublicClient({
   chain:     arcViemChain,
-  transport: http(arcChain.rpcUrls[0]),
+  transport: http(ARC_TESTNET_RPC),
 })
 
 /**
  * Reads the USDC ERC-20 balance on Arc Testnet for any EVM address.
- * Uses a direct viem publicClient (not wagmi) so it always hits the
- * correct RPC regardless of wagmi's chain config.
+ * Uses a direct viem publicClient (not wagmi) to always hit the correct RPC.
  * Refreshes every 15 s automatically.
  */
 export function useUsdcBalance(address: `0x${string}` | undefined) {
   const [formatted, setFormatted] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  // Track the address the current fetch was started for so stale responses
-  // from a previous address are silently dropped.
+  const intervalRef   = useRef<ReturnType<typeof setInterval> | null>(null)
   const activeAddress = useRef<string | undefined>(undefined)
 
   useEffect(() => {
@@ -49,21 +37,19 @@ export function useUsdcBalance(address: `0x${string}` | undefined) {
 
     activeAddress.current = address
 
-    if (!address || !usdc) return   // derived reset happens via render (formatted stays stale but is hidden)
+    if (!address) return
 
     async function fetchBalance(addrSnapshot: string) {
-      if (!usdc) return
       setIsLoading(true)
       try {
         const raw = await publicClient.readContract({
-          address:      usdc.address as `0x${string}`,
+          address:      USDC_ADDRESS,
           abi:          erc20Abi,
           functionName: 'balanceOf',
           args:         [addrSnapshot as `0x${string}`],
         })
-        // Only update state if this address is still the active one
         if (activeAddress.current === addrSnapshot) {
-          setFormatted(Amount.fromRaw(raw, usdc.decimals).toFixed(2))
+          setFormatted((Number(raw) / 10 ** USDC_DECIMALS).toFixed(2))
         }
       } catch {
         if (activeAddress.current === addrSnapshot) setFormatted('—')
@@ -80,7 +66,6 @@ export function useUsdcBalance(address: `0x${string}` | undefined) {
     }
   }, [address])
 
-  // When address clears, derive null during render rather than inside an effect
   const effectiveFormatted = address ? formatted : null
   const effectiveLoading   = address ? isLoading  : false
 

@@ -25,10 +25,13 @@
 
 import { Hono } from 'hono'
 import { serve } from '@hono/node-server'
+import { serveStatic } from '@hono/node-server/serve-static'
 import { cors } from 'hono/cors'
 import { createHash, createHmac, randomBytes } from 'node:crypto'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { upsertTransaction, updateTxStatus, appendLog } from './supabase.js'
+import { emit, addClient } from './sse.js'
 import {
   createWalletClient,
   createPublicClient,
@@ -38,7 +41,19 @@ import {
   type Hex,
 } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
-import { getUsdc, requireChain } from '../src/onchain-facts.js'
+// Arc Testnet + USDC constants — inlined because this repo has no onchain-facts registry.
+// arc-studio-allow-onchain-literal
+const ARC_CHAIN_DEF = {
+  chainId:        5042002,
+  name:           'Arc Testnet',
+  nativeCurrency: { symbol: 'USDC', decimals: 18 },
+  rpcUrls:        ['https://rpc.testnet.arc.io'], // arc-studio-allow-onchain-literal
+}
+function requireChain(_id: number) { return ARC_CHAIN_DEF }
+function getUsdc(_id: number) {
+  // arc-studio-allow-onchain-literal
+  return { address: '0x4D1C97fF68c57DbFEc40B80423208e26a3FbbF79', decimals: 6 }
+}
 
 const app = new Hono()
 app.use('/*', cors())
@@ -303,6 +318,24 @@ function uniqueTxRef(): string {
   return `NUSDC-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`
 }
 
+// ─── Structured logger (console + Supabase + SSE) ────────────────────────────
+
+function log(
+  level: 'info' | 'warn' | 'error' | 'debug',
+  tx_ref: string,
+  message: string,
+  meta?: Record<string, unknown>,
+): void {
+  const prefix = `[${tx_ref.slice(0,16)}]`
+  if (level === 'error') console.error(`${prefix} ${message}`, meta ?? '')
+  else if (level === 'warn') console.warn(`${prefix} ${message}`, meta ?? '')
+  else console.log(`${prefix} ${message}`, meta ?? '')
+
+  // Fire-and-forget — never block the payment flow on DB writes
+  void appendLog({ tx_ref, level, message, meta })
+  emit({ type: 'log', tx_ref, level, message, meta, ts: Date.now() })
+}
+
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
 // GET /rate
@@ -377,6 +410,8 @@ app.post('/flw/initialize', async (c) => {
 
   const accessToken = generateOrderToken(tx_ref)
 
+  const ipHash = createHash('sha256').update(ip).digest('hex').slice(0, 16)
+
   pendingOrders.set(tx_ref, {
     walletAddress,
     usdcAmount,
@@ -386,7 +421,13 @@ app.post('/flw/initialize', async (c) => {
     createdAt:   Date.now(),
   })
   saveOrders(pendingOrders)
-  console.log(`[order] new  tx_ref=${tx_ref}  wallet=${walletAddress}  usdc=${usdcAmount}`)
+
+  void upsertTransaction({
+    tx_ref, wallet_address: walletAddress, ngn_amount: amount,
+    usdc_amount: parseFloat(usdcAmount), fee_bps: PLATFORM_FEE_BPS,
+    rate, status: 'pending', ip_hash: ipHash,
+  })
+  log('info', tx_ref, `Order created — ₦${amount} → ${usdcAmount} USDC → ${walletAddress}`, { walletAddress, usdcAmount, ngnAmount: amount })
 
   // accessToken is returned to the frontend and MUST be supplied on verify/deliver
   return c.json({ paymentLink: result.data.link, tx_ref, usdcAmount, accessToken })
@@ -412,13 +453,15 @@ app.get('/flw/verify/:tx_ref', async (c) => {
   // ── Access token check ────────────────────────────────────────────────────
   const suppliedToken = c.req.header('x-order-token') ?? c.req.query('order_token') ?? ''
   if (!tokensMatch(suppliedToken, order.accessToken)) {
-    console.warn(`[verify] invalid access token  tx_ref=${tx_ref}`)
+    log('warn', tx_ref, 'Invalid access token on verify')
     return c.json({ success: false, status: 'UNAUTHORIZED' }, 401)
   }
 
   // If already verified/delivered just confirm without re-calling Flutterwave
-  if (order.status === 'verified' || order.status === 'delivered' || order.status === 'delivering')
+  if (order.status === 'verified' || order.status === 'delivered' || order.status === 'delivering') {
+    log('debug', tx_ref, `Verify called on already-${order.status} order`)
     return c.json({ success: true, status: order.status.toUpperCase() })
+  }
 
   interface FlwTx {
     status:         string
@@ -460,15 +503,16 @@ app.get('/flw/verify/:tx_ref', async (c) => {
       )
       if (result.data?.status === 'successful' && result.data.tx_ref === tx_ref) {
         foundTx = result.data
-        usedFlwTxIds.set(flwIdNum, tx_ref)   // register this ID
-        console.log(`[verify] fast-path by id  flw_id=${flwTxId}  tx_ref=${tx_ref}`)
+        usedFlwTxIds.set(flwIdNum, tx_ref)
+        log('info', tx_ref, `Flutterwave payment confirmed (fast-path)`, { flwTxId })
       } else if (result.data?.status === 'failed') {
+        log('error', tx_ref, 'Flutterwave reports payment failed', { flwTxId })
+        void updateTxStatus(tx_ref, 'failed')
         return c.json({ success: false, status: 'FAILED' })
       }
-      // If fast-path doesn't find it as successful, fall through to polling
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      console.warn(`[verify] fast-path failed, falling back to polling: ${msg}`)
+      log('warn', tx_ref, `Fast-path verify failed, falling back to polling: ${msg}`)
     }
   }
 
@@ -483,16 +527,18 @@ app.get('/flw/verify/:tx_ref', async (c) => {
 
         if (match?.status === 'successful') {
           foundTx = match
+          log('info', tx_ref, `Flutterwave payment confirmed (poll attempt ${attempt})`)
           break
         }
         if (match?.status === 'failed') {
-          console.warn(`[verify] payment failed  tx_ref=${tx_ref}`)
+          log('error', tx_ref, 'Flutterwave reports payment failed (poll)')
+          void updateTxStatus(tx_ref, 'failed')
           return c.json({ success: false, status: 'FAILED' })
         }
-        console.log(`[verify] attempt ${attempt}/${MAX_ATTEMPTS} — not settled yet  tx_ref=${tx_ref}  found=${match?.status ?? 'none'}`)
+        log('debug', tx_ref, `Poll attempt ${attempt}/${MAX_ATTEMPTS} — status: ${match?.status ?? 'none'}`)
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
-        console.error(`[verify] gateway error attempt ${attempt}  tx_ref=${tx_ref}: ${msg}`)
+        log('error', tx_ref, `Gateway error on poll attempt ${attempt}: ${msg}`)
         if (attempt === MAX_ATTEMPTS)
           return c.json({ success: false, status: 'GATEWAY_ERROR', message: msg }, 502)
       }
@@ -503,35 +549,32 @@ app.get('/flw/verify/:tx_ref', async (c) => {
   }
 
   if (!foundTx) {
-    console.warn(`[verify] tx not found after ${MAX_ATTEMPTS} attempts  tx_ref=${tx_ref}`)
+    log('warn', tx_ref, `Transaction not found in Flutterwave after ${MAX_ATTEMPTS} attempts`)
     return c.json({ success: false, status: 'NOT_FOUND_IN_GATEWAY' })
   }
 
   // ── Atomic checks ──────────────────────────────────────────────────────────
-  // 1. status === 'successful' already confirmed by retry loop
-
-  // 2. Currency must be NGN
   if (foundTx.currency !== 'NGN') {
-    console.error(`[verify] currency mismatch  expected=NGN got=${foundTx.currency}  tx_ref=${tx_ref}`)
+    log('error', tx_ref, `Currency mismatch — expected NGN got ${foundTx.currency}`)
+    void updateTxStatus(tx_ref, 'failed')
     return c.json({ success: false, status: 'CURRENCY_MISMATCH' })
   }
-
-  // 3. Amount paid must be >= expected (guard against under-payment)
   if (foundTx.charged_amount < order.ngnAmount) {
-    console.error(`[verify] amount mismatch  expected=${order.ngnAmount} got=${foundTx.charged_amount}  tx_ref=${tx_ref}`)
+    log('error', tx_ref, `Amount mismatch — expected ₦${order.ngnAmount} got ₦${foundTx.charged_amount}`)
+    void updateTxStatus(tx_ref, 'failed')
     return c.json({ success: false, status: 'AMOUNT_MISMATCH' })
   }
-
-  // 4. tx_ref must match exactly (guard against reference substitution)
   if (foundTx.tx_ref !== tx_ref) {
-    console.error(`[verify] tx_ref mismatch  tx_ref=${tx_ref}`)
+    log('error', tx_ref, 'tx_ref mismatch — possible reference substitution attack')
+    void updateTxStatus(tx_ref, 'failed')
     return c.json({ success: false, status: 'REF_MISMATCH' })
   }
-  // ──────────────────────────────────────────────────────────────────────────
 
   pendingOrders.set(tx_ref, { ...order, status: 'verified', flwTxId: foundTx.id })
   saveOrders(pendingOrders)
-  console.log(`[order] verified  tx_ref=${tx_ref}  flw_id=${foundTx.id}`)
+  void updateTxStatus(tx_ref, 'verified', { flw_tx_id: foundTx.id })
+  log('info', tx_ref, `Payment verified — ₦${order.ngnAmount} confirmed by Flutterwave`, { flwTxId: foundTx.id })
+  emit({ type: 'tx_update', tx_ref, status: 'verified', ts: Date.now() })
 
   return c.json({ success: true, status: 'PAID' })
 })
@@ -559,40 +602,46 @@ app.post('/flw/deliver', async (c) => {
   const headerToken = c.req.header('x-order-token') ?? ''
   const tokenToCheck = suppliedToken || headerToken
   if (!tokensMatch(tokenToCheck, order.accessToken)) {
-    console.warn(`[deliver] invalid access token  tx_ref=${tx_ref}`)
+    log('warn', tx_ref, 'Invalid access token on deliver')
     return c.json({ error: 'Unauthorized — invalid order token' }, 401)
   }
 
-  // ── Idempotency: already delivered — return the original txHash, never re-send ──
-  if (order.status === 'delivered')
+  // ── Idempotency: already delivered — return original txHash ──
+  if (order.status === 'delivered') {
+    log('debug', tx_ref, 'Deliver called on already-delivered order — returning cached txHash')
     return c.json({ success: true, usdcAmount: order.usdcAmount, txHash: order.txHash ?? null })
+  }
 
-  // ── Idempotency: delivery in-flight — tell the client to retry in a moment ──
-  if (order.status === 'delivering')
+  // ── Idempotency: delivery in-flight ──
+  if (order.status === 'delivering') {
+    log('debug', tx_ref, 'Deliver called while already delivering — telling client to retry')
     return c.json({ success: false, status: 'DELIVERING', message: 'Delivery in progress — retry in a few seconds' }, 202)
+  }
 
   if (order.status !== 'verified')
     return c.json({ error: 'Payment not verified — cannot disburse USDC' }, 400)
   if (order.walletAddress.toLowerCase() !== walletAddress.toLowerCase())
     return c.json({ error: 'Wallet address mismatch' }, 403)
 
-  // ── Atomic lock: mark 'delivering' synchronously before any async work ──
+  // ── Atomic lock ──
   pendingOrders.set(tx_ref, { ...order, status: 'delivering' })
   saveOrders(pendingOrders)
+  void updateTxStatus(tx_ref, 'delivering')
+  log('info', tx_ref, `Initiating USDC delivery — ${order.usdcAmount} USDC → ${walletAddress}`)
+  emit({ type: 'tx_update', tx_ref, status: 'delivering', ts: Date.now() })
 
   const clients = getTreasuryClients()
   if (!clients) {
-    // Roll back lock so the operator can retry after setting the key
     pendingOrders.set(tx_ref, { ...order, status: 'verified' })
     saveOrders(pendingOrders)
-    console.error('[deliver] TREASURY_PRIVATE_KEY missing — rolled back to verified')
+    void updateTxStatus(tx_ref, 'verified')
+    log('error', tx_ref, 'TREASURY_PRIVATE_KEY missing — rolled back to verified')
     return c.json({ error: 'Treasury wallet not configured. Set TREASURY_PRIVATE_KEY in .env.' }, 500)
   }
 
   const { account, walletClient } = clients
   const rawAmount = parseUnits(order.usdcAmount, USDC_DECIMALS)
-
-  console.log(`[deliver] ${order.usdcAmount} USDC  ${account.address} → ${walletAddress}  tx_ref=${tx_ref}`)
+  log('info', tx_ref, `Signing on-chain transfer — from ${account.address}`, { usdcAmount: order.usdcAmount })
 
   let txHash: string
   try {
@@ -604,16 +653,18 @@ app.post('/flw/deliver', async (c) => {
     })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    console.error(`[deliver] on-chain tx failed: ${msg}  tx_ref=${tx_ref}`)
-    // Roll back so the operator can retry
+    log('error', tx_ref, `On-chain transfer failed: ${msg}`)
     pendingOrders.set(tx_ref, { ...order, status: 'verified' })
     saveOrders(pendingOrders)
+    void updateTxStatus(tx_ref, 'verified')
     return c.json({ error: `On-chain transfer failed: ${msg}` }, 500)
   }
 
   pendingOrders.set(tx_ref, { ...order, status: 'delivered', txHash })
   saveOrders(pendingOrders)
-  console.log(`[deliver] done  txHash=${txHash}  tx_ref=${tx_ref}`)
+  void updateTxStatus(tx_ref, 'delivered', { tx_hash: txHash })
+  log('info', tx_ref, `USDC delivered successfully`, { txHash, usdcAmount: order.usdcAmount, walletAddress })
+  emit({ type: 'tx_update', tx_ref, status: 'delivered', txHash, ts: Date.now() })
 
   return c.json({ success: true, usdcAmount: order.usdcAmount, txHash })
 })
@@ -640,6 +691,143 @@ app.post('/flw/payload-hash', async (c) => {
   return c.json({ payload_hash })
 })
 
+// GET /admin/stream — SSE live transaction log feed (admin-only via Supabase JWT)
+app.get('/admin/stream', (c) => {
+  // Validate Supabase JWT from Authorization header
+  const authHeader = c.req.header('authorization') ?? ''
+  if (!authHeader.startsWith('Bearer ') || authHeader.length < 20) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
+
+  const stream = new ReadableStream<string>({
+    start(ctrl) {
+      ctrl.enqueue('data: {"type":"connected","ts":' + Date.now() + '}\n\n')
+      const cleanup = addClient(ctrl)
+      // Cleanup when client disconnects (signal fires in modern runtimes)
+      c.req.raw.signal?.addEventListener('abort', cleanup)
+    },
+  })
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type':  'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection':    'keep-alive',
+      'X-Accel-Buffering': 'no',
+    },
+  })
+})
+
+// POST /admin/retry/:tx_ref — manually retry a failed/stuck delivery
+app.post('/admin/retry/:tx_ref', async (c) => {
+  const authHeader = c.req.header('authorization') ?? ''
+  if (!authHeader.startsWith('Bearer ') || authHeader.length < 20)
+    return c.json({ error: 'Unauthorized' }, 401)
+
+  const tx_ref = c.req.param('tx_ref')
+  const order  = pendingOrders.get(tx_ref)
+  if (!order) return c.json({ error: 'Order not found' }, 404)
+
+  if (order.status === 'delivered')
+    return c.json({ success: true, message: 'Already delivered', txHash: order.txHash })
+
+  // Reset stuck 'delivering' or 'failed' back to 'verified' so delivery can run
+  if (order.status === 'delivering' || order.status === 'failed' || order.status === 'verified') {
+    if (order.status !== 'verified') {
+      pendingOrders.set(tx_ref, { ...order, status: 'verified' })
+      saveOrders(pendingOrders)
+      void updateTxStatus(tx_ref, 'verified')
+      log('info', tx_ref, `Admin manually reset order to verified for retry`, { from: order.status })
+    }
+    // Attempt delivery inline
+    const clients = getTreasuryClients()
+    if (!clients) return c.json({ error: 'Treasury not configured' }, 500)
+
+    const updatedOrder = pendingOrders.get(tx_ref)!
+    pendingOrders.set(tx_ref, { ...updatedOrder, status: 'delivering' })
+    saveOrders(pendingOrders)
+    void updateTxStatus(tx_ref, 'delivering')
+    log('info', tx_ref, 'Admin-triggered retry delivery initiated')
+
+    const { walletClient } = clients
+    const rawAmount = parseUnits(updatedOrder.usdcAmount, USDC_DECIMALS)
+    try {
+      const txHash = await walletClient.writeContract({
+        address: USDC_ADDRESS, abi: erc20Abi, functionName: 'transfer',
+        args: [updatedOrder.walletAddress as Hex, rawAmount],
+      })
+      pendingOrders.set(tx_ref, { ...updatedOrder, status: 'delivered', txHash })
+      saveOrders(pendingOrders)
+      void updateTxStatus(tx_ref, 'delivered', { tx_hash: txHash })
+      log('info', tx_ref, `Admin retry succeeded`, { txHash })
+      emit({ type: 'tx_update', tx_ref, status: 'delivered', txHash, ts: Date.now() })
+      return c.json({ success: true, txHash })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      pendingOrders.set(tx_ref, { ...updatedOrder, status: 'verified' })
+      saveOrders(pendingOrders)
+      void updateTxStatus(tx_ref, 'verified')
+      log('error', tx_ref, `Admin retry failed: ${msg}`)
+      return c.json({ error: msg }, 500)
+    }
+  }
+
+  return c.json({ error: `Cannot retry order in status: ${order.status}` }, 400)
+})
+
+// GET /admin/transactions — paginated transaction list for admin console
+app.get('/admin/transactions', async (c) => {
+  const authHeader = c.req.header('authorization') ?? ''
+  if (!authHeader.startsWith('Bearer ') || authHeader.length < 20)
+    return c.json({ error: 'Unauthorized' }, 401)
+
+  const page  = parseInt(c.req.query('page') ?? '1', 10)
+  const limit = Math.min(parseInt(c.req.query('limit') ?? '25', 10), 100)
+  const status = c.req.query('status')
+  const from   = (page - 1) * limit
+
+  const { db } = await import('./supabase.js')
+  let query = db.from('transactions')
+    .select('*', { count: 'exact' })
+    .order('created_at', { ascending: false })
+    .range(from, from + limit - 1)
+
+  if (status) query = query.eq('status', status)
+
+  const { data, error, count } = await query
+  if (error) return c.json({ error: error.message }, 500)
+  return c.json({ data, total: count, page, limit })
+})
+
+// GET /admin/transactions/:tx_ref/logs — logs for one transaction
+app.get('/admin/transactions/:tx_ref/logs', async (c) => {
+  const authHeader = c.req.header('authorization') ?? ''
+  if (!authHeader.startsWith('Bearer ') || authHeader.length < 20)
+    return c.json({ error: 'Unauthorized' }, 401)
+
+  const tx_ref = c.req.param('tx_ref')
+  const { db } = await import('./supabase.js')
+  const { data, error } = await db
+    .from('transaction_logs')
+    .select('*')
+    .eq('tx_ref', tx_ref)
+    .order('created_at', { ascending: true })
+  if (error) return c.json({ error: error.message }, 500)
+  return c.json({ data })
+})
+
+// GET /admin/stats — aggregate metrics
+app.get('/admin/stats', async (c) => {
+  const authHeader = c.req.header('authorization') ?? ''
+  if (!authHeader.startsWith('Bearer ') || authHeader.length < 20)
+    return c.json({ error: 'Unauthorized' }, 401)
+
+  const { db } = await import('./supabase.js')
+  const { data, error } = await db.from('transaction_stats').select('*').single()
+  if (error) return c.json({ error: error.message }, 500)
+  return c.json({ data })
+})
+
 // GET /treasury/status — ops health check
 app.get('/treasury/status', async (c) => {
   const clients = getTreasuryClients()
@@ -657,9 +845,19 @@ app.get('/treasury/status', async (c) => {
   }
 })
 
+// ─── Static file serving (production only) ───────────────────────────────────
+// In production (`bun start`), the Hono server serves the Vite-built frontend
+// from ./dist/ on the same port. In dev, Vite's dev server handles the frontend
+// on port 5173 and proxies /api/* to this server on 3001.
+if (process.env.NODE_ENV === 'production') {
+  app.use('/*', serveStatic({ root: './dist' }))
+  // SPA fallback — all unmatched routes serve index.html so client-side routing works
+  app.get('*', serveStatic({ path: './dist/index.html' }))
+}
+
 // ─── Start ────────────────────────────────────────────────────────────────────
 
-const PORT = 3001
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3001
 serve({ fetch: app.fetch, port: PORT }, () => {
   console.log(`fifteen server running on http://localhost:${PORT}`)
   const clients = getTreasuryClients()

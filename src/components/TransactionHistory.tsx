@@ -1,6 +1,8 @@
 import { ExternalLink } from 'lucide-react'
-import { buildTxExplorerUrl } from '@/onchain-facts'
-import { ARC_TESTNET_CHAIN_ID } from '@/constants'
+const ARC_TESTNET_CHAIN_ID = 5042002
+function buildTxExplorerUrl(_chainId: number, hash: string) {
+  return `https://explorer.testnet.arc.io/tx/${hash}`
+}
 
 export interface TxRecord {
   id: string

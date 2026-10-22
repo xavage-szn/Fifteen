@@ -1,9 +1,21 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Loader2, CheckCircle2, ExternalLink, AlertCircle, ChevronRight } from 'lucide-react'
-import { buildTxExplorerUrl } from '@/onchain-facts'
-import { parseAmount, Amount } from '@/onchain-money'
-import { ARC_TESTNET_CHAIN_ID } from '@/constants'
+// Inlined — this repo has no @/onchain-facts or @/onchain-money modules
+const ARC_EXPLORER_BASE = 'https://explorer.testnet.arc.io/tx/'
+function buildTxExplorerUrl(_chainId: number, hash: string) { return `${ARC_EXPLORER_BASE}${hash}` }
+
+// Minimal Amount helper — USDC has 6 decimals on Arc Testnet
+const USDC_DECIMALS = 6
+const Amount = {
+  fromRaw: (raw: bigint, _dec: number) => ({
+    toFixed: (d: number) => (Number(raw) / 10 ** USDC_DECIMALS).toFixed(d),
+  }),
+}
+function parseAmount(_chainId: number, human: string) {
+  return { raw: BigInt(Math.round(parseFloat(human) * 10 ** USDC_DECIMALS)) }
+}
+const ARC_TESTNET_CHAIN_ID = 5042002
 
 const spectral = 'linear-gradient(90deg, #5fbeff, #af8ff4, #f05c6b, #ffcd83, #7ef1b3)'
 
