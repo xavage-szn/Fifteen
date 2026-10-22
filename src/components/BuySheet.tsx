@@ -1,21 +1,17 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Loader2, CheckCircle2, ExternalLink, AlertCircle, ChevronRight } from 'lucide-react'
-// Inlined — this repo has no @/onchain-facts or @/onchain-money modules
-const ARC_EXPLORER_BASE = 'https://explorer.testnet.arc.io/tx/'
-function buildTxExplorerUrl(_chainId: number, hash: string) { return `${ARC_EXPLORER_BASE}${hash}` }
+import { X, Loader2, CheckCircle2, ExternalLink, AlertCircle, ChevronRight, Copy, Check } from 'lucide-react'
+import { TokenUSDC } from '@web3icons/react'
 
-// Minimal Amount helper — USDC has 6 decimals on Arc Testnet
-const USDC_DECIMALS = 6
-const Amount = {
-  fromRaw: (raw: bigint, _dec: number) => ({
-    toFixed: (d: number) => (Number(raw) / 10 ** USDC_DECIMALS).toFixed(d),
-  }),
-}
-function parseAmount(_chainId: number, human: string) {
-  return { raw: BigInt(Math.round(parseFloat(human) * 10 ** USDC_DECIMALS)) }
-}
+const ARC_EXPLORER_BASE   = 'https://explorer.testnet.arc.io/tx/'
 const ARC_TESTNET_CHAIN_ID = 5042002
+function buildTxUrl(hash: string) { return `${ARC_EXPLORER_BASE}${hash}` }
+
+const USDC_DECIMALS = 6
+function rawToUsdc(raw: bigint) { return (Number(raw) / 10 ** USDC_DECIMALS).toFixed(2) }
+function usdcToRaw(human: string): bigint {
+  return BigInt(Math.round(parseFloat(human) * 10 ** USDC_DECIMALS))
+}
 
 const spectral = 'linear-gradient(90deg, #5fbeff, #af8ff4, #f05c6b, #ffcd83, #7ef1b3)'
 
@@ -32,120 +28,111 @@ const glass = {
   } as React.CSSProperties,
 }
 
-const springs = {
-  sheet: { type: 'spring' as const, stiffness: 360, damping: 40 },
-}
-
+const springs = { sheet: { type: 'spring' as const, stiffness: 360, damping: 40 } }
 const NGN_PRESETS = [1000, 2500, 5000, 10000, 25000]
 
-function ngnToUsdc(ngn: number, rate: number): string {
-  return (ngn / rate).toFixed(2)
-}
-
 interface FlwInitResponse {
-  paymentLink:  string
-  tx_ref:       string
-  usdcAmount:   string
-  accessToken:  string   // per-transaction HMAC token — required on verify + deliver
+  tx_ref:      string
+  usdcAmount:  string
+  accessToken: string
 }
-
-interface FlwVerifyResponse {
-  success: boolean
-  status:  string
-}
-
-interface FlwDeliverResponse {
-  success:    boolean
-  usdcAmount: string
-  txHash:     string | null
-}
+interface FlwVerifyResponse { success: boolean; status: string }
+interface FlwDeliverResponse { success: boolean; usdcAmount: string; txHash: string | null }
 
 interface BuySheetProps {
-  open:          boolean
-  onClose:       () => void
-  usdcRate:      number
-  walletAddress: `0x${string}` | undefined
-  /** Pre-filled NGN amount from the main page buy widget */
-  ngnAmount?:    number
+  open:              boolean
+  onClose:           () => void
+  usdcRate:          number
+  walletAddress:     `0x${string}` | undefined
+  ngnAmount?:        number
+  /** Pre-calculated, fee-inclusive USDC amount from the main page quote */
+  lockedUsdcAmount?: string
 }
 
 type Step = 'input' | 'paying' | 'verifying' | 'delivering' | 'done' | 'error'
 
-export default function BuySheet({ open, onClose, usdcRate, walletAddress, ngnAmount: initialNgn }: BuySheetProps) {
-  // ngnOverride is set when the user edits the amount inside the sheet.
-  // When null, we fall back to initialNgn (pre-filled from the main page).
-  const [ngnOverride, setNgnOverride]   = useState<string | null>(null)
-  const [step, setStep]                 = useState<Step>('input')
-  const [errorMsg, setErrorMsg]         = useState('')
-  const [txHash, setTxHash]             = useState<string | undefined>()
-  const [usdcToDeliver, setUsdcToDeliver] = useState<bigint>(0n)
-  const [txRef, setTxRef]               = useState<string>('')
+function useCopy(text: string) {
+  const [copied, setCopied] = useState(false)
+  const copy = useCallback(() => {
+    void navigator.clipboard.writeText(text).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }, [text])
+  return { copied, copy }
+}
 
-  // The displayed/active NGN amount: user's override takes priority, else the pre-fill
-  const ngnAmount = ngnOverride ?? (initialNgn ? String(initialNgn) : '')
-  const setNgnAmount = (v: string) => setNgnOverride(v)
+export default function BuySheet({
+  open, onClose, usdcRate, walletAddress,
+  ngnAmount: initialNgn, lockedUsdcAmount,
+}: BuySheetProps) {
+  const [ngnOverride,     setNgnOverride]     = useState<string | null>(null)
+  const [step,            setStep]            = useState<Step>('input')
+  const [errorMsg,        setErrorMsg]        = useState('')
+  const [txHash,          setTxHash]          = useState<string | undefined>()
+  const [finalUsdc,       setFinalUsdc]       = useState('0.00')   // confirmed USDC from server
+  const [finalNgn,        setFinalNgn]        = useState(0)        // locked NGN at payment time
+  const [txRef,           setTxRef]           = useState('')
+  const [lockedRate,      setLockedRate]      = useState(usdcRate)
 
-  const parsedNgn     = parseFloat(ngnAmount) || 0
-  const estimatedUsdc = parsedNgn > 0 ? ngnToUsdc(parsedNgn, usdcRate) : '0.00'
+  // Active NGN amount — user override > pre-fill
+  const ngnAmount    = ngnOverride ?? (initialNgn ? String(initialNgn) : '')
+  const parsedNgn    = parseFloat(ngnAmount) || 0
+
+  // USDC estimate — if the main page passed a locked amount, use it to stay consistent
+  // Otherwise fall back to live calculation (no fee, sheet-internal)
+  const estimatedUsdc = useMemo(() => {
+    if (lockedUsdcAmount && !ngnOverride) return lockedUsdcAmount
+    return parsedNgn > 0 ? (parsedNgn / usdcRate).toFixed(2) : '0.00'
+  }, [lockedUsdcAmount, ngnOverride, parsedNgn, usdcRate])
+
   const isValidAmount = parsedNgn >= 500
   const canPay        = isValidAmount && !!walletAddress
 
-  const handleNgnInput = (val: string) => setNgnAmount(val.replace(/[^0-9]/g, ''))
+  const handleNgnInput = (val: string) => setNgnOverride(val.replace(/[^0-9]/g, ''))
 
-  // Ref pattern: keeps verifyAndDeliver callable from the popup-close poll
-  // without a circular useCallback dependency.
-  const verifyRef = useRef<(ref: string, rawUsdc: bigint, token: string, flwTxId?: number) => Promise<void>>(async () => { /* noop */ })
+  // Ref pattern for verifyAndDeliver (avoids circular deps in useCallback)
+  const verifyRef = useRef<(ref: string, rawUsdc: bigint, token: string, flwTxId?: number) => Promise<void>>(async () => {})
 
   const verifyAndDeliver = useCallback(async (ref: string, rawUsdc: bigint, token: string, flwTxId?: number) => {
     setStep('verifying')
     try {
-      // Step 1 — server verifies with Flutterwave (retries up to 6× with backoff)
-      // Pass flwTxId when available so the server can verify by transaction ID (faster)
       const verifyUrl = flwTxId
         ? `/api/flw/verify/${encodeURIComponent(ref)}?flw_tx_id=${flwTxId}`
         : `/api/flw/verify/${encodeURIComponent(ref)}`
-      const verifyRes = await fetch(verifyUrl, {
-        headers: { 'X-Order-Token': token },
-      })
-      const verifyData = await verifyRes.json() as FlwVerifyResponse
-      if (!verifyRes.ok) {
-        throw new Error((verifyData as { error?: string }).error ?? 'Payment verification failed')
-      }
+      const verifyRes  = await fetch(verifyUrl, { headers: { 'X-Order-Token': token } })
+      const verifyData = await verifyRes.json() as FlwVerifyResponse & { error?: string }
+      if (!verifyRes.ok) throw new Error(verifyData.error ?? 'Payment verification failed')
       if (!verifyData.success) {
         const statusMap: Record<string, string> = {
-          PENDING:             'Payment is still pending — please wait and try again',
-          FAILED:              'Payment failed on Flutterwave',
-          CURRENCY_MISMATCH:   'Currency mismatch — please contact support',
-          AMOUNT_MISMATCH:     'Amount paid did not match — please contact support',
-          REF_MISMATCH:        'Reference mismatch — please contact support',
-          NOT_FOUND_IN_GATEWAY:'Transaction not found in Flutterwave — did the payment complete?',
+          PENDING:              'Payment is still pending — please wait and try again',
+          FAILED:               'Payment failed on Flutterwave',
+          CURRENCY_MISMATCH:    'Currency mismatch — please contact support',
+          AMOUNT_MISMATCH:      'Amount paid did not match — please contact support',
+          REF_MISMATCH:         'Reference mismatch — please contact support',
+          NOT_FOUND_IN_GATEWAY: 'Transaction not found in Flutterwave — did the payment complete?',
         }
-        const readable = statusMap[verifyData.status] ?? `Payment not confirmed (${verifyData.status})`
-        throw new Error(readable)
+        throw new Error(statusMap[verifyData.status] ?? `Payment not confirmed (${verifyData.status})`)
       }
 
-      // Step 2 — deliver USDC only after verification passes
-      // Retry once on 202 (delivery already in-flight) to handle duplicate callbacks
+      setStep('delivering')
       let deliverData: FlwDeliverResponse | undefined
       for (let attempt = 0; attempt < 3; attempt++) {
-        const deliverRes = await fetch('/api/flw/deliver', {
-          method:  'POST',
+        const deliverRes  = await fetch('/api/flw/deliver', {
+          method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Order-Token': token },
           body:    JSON.stringify({ tx_ref: ref, walletAddress, accessToken: token }),
         })
-        const body = await deliverRes.json() as FlwDeliverResponse & { error?: string; status?: string }
-        if (deliverRes.status === 202) {
-          // Delivery in-flight — wait 3s and retry
-          await new Promise(r => setTimeout(r, 3000))
-          continue
-        }
+        const body = await deliverRes.json() as FlwDeliverResponse & { error?: string }
+        if (deliverRes.status === 202) { await new Promise(r => setTimeout(r, 3000)); continue }
         if (!deliverRes.ok) throw new Error(body.error ?? 'USDC delivery failed')
         deliverData = body
         break
       }
-      if (!deliverData) throw new Error('Delivery timed out — please contact support with your ref: ' + ref)
+      if (!deliverData) throw new Error('Delivery timed out — contact support with ref: ' + ref)
 
-      setUsdcToDeliver(rawUsdc)
+      // Lock the final delivered amount from the server response (source of truth)
+      setFinalUsdc(deliverData.usdcAmount || rawToUsdc(rawUsdc))
       if (deliverData.txHash) setTxHash(deliverData.txHash)
       setStep('done')
     } catch (err: unknown) {
@@ -156,23 +143,20 @@ export default function BuySheet({ open, onClose, usdcRate, walletAddress, ngnAm
 
   useEffect(() => { verifyRef.current = verifyAndDeliver }, [verifyAndDeliver])
 
-  // Lazily load the Flutterwave Inline JS SDK once
   const sdkLoaded = useRef(false)
   const loadFlwSdk = useCallback((): Promise<void> => {
     if (sdkLoaded.current) return Promise.resolve()
     return new Promise((resolve, reject) => {
-      const existing = document.getElementById('flw-sdk')
-      if (existing) { sdkLoaded.current = true; resolve(); return }
-      const script = document.createElement('script')
-      script.id  = 'flw-sdk'
-      script.src = 'https://checkout.flutterwave.com/v3.js'
-      script.onload  = () => { sdkLoaded.current = true; resolve() }
-      script.onerror = () => reject(new Error('Failed to load Flutterwave SDK'))
+      if (document.getElementById('flw-sdk')) { sdkLoaded.current = true; resolve(); return }
+      const script    = document.createElement('script')
+      script.id       = 'flw-sdk'
+      script.src      = 'https://checkout.flutterwave.com/v3.js'
+      script.onload   = () => { sdkLoaded.current = true; resolve() }
+      script.onerror  = () => reject(new Error('Failed to load Flutterwave SDK'))
       document.head.appendChild(script)
     })
   }, [])
 
-  // Stable customer email derived from wallet address (no sensitive data)
   const customerEmail = useMemo(() =>
     walletAddress
       ? `${walletAddress.toLowerCase().slice(2, 10)}@fifteen.app`
@@ -185,10 +169,8 @@ export default function BuySheet({ open, onClose, usdcRate, walletAddress, ngnAm
     setErrorMsg('')
 
     try {
-      // 1 — Load Flutterwave inline SDK
       await loadFlwSdk()
 
-      // 2 — Reserve the order and get tx_ref + expected USDC from server
       const initRes = await fetch('/api/flw/initialize', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -200,11 +182,13 @@ export default function BuySheet({ open, onClose, usdcRate, walletAddress, ngnAm
       }
       const { tx_ref: ref, usdcAmount, accessToken: token } = await initRes.json() as FlwInitResponse
 
+      // Lock the NGN and rate at payment time so the receipt matches exactly
       setTxRef(ref)
-      const rawAmount = parseAmount(ARC_TESTNET_CHAIN_ID, usdcAmount)
-      setUsdcToDeliver(rawAmount.raw)
+      setFinalUsdc(usdcAmount)
+      setFinalNgn(parsedNgn)
+      setLockedRate(usdcRate)
+      const rawUsdc = usdcToRaw(usdcAmount)
 
-      // 3 — Fetch tamper-proof payload_hash from server (secret key stays server-side)
       const hashRes = await fetch('/api/flw/payload-hash', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -214,15 +198,12 @@ export default function BuySheet({ open, onClose, usdcRate, walletAddress, ngnAm
         ? await hashRes.json() as { payload_hash: string }
         : { payload_hash: undefined }
 
-      // 4 — Launch Flutterwave Inline modal (callback mode, no redirect)
       const FLW_PUBLIC_KEY = import.meta.env.VITE_FLW_PUBLIC_KEY as string | undefined
       if (!FLW_PUBLIC_KEY) throw new Error('Flutterwave public key not configured')
 
-      // FlutterwaveCheckout is injected by the SDK script at runtime
       const checkout = (window as unknown as {
         FlutterwaveCheckout: (opts: Record<string, unknown>) => { close: () => void }
       }).FlutterwaveCheckout
-
       if (typeof checkout !== 'function') throw new Error('Flutterwave SDK not ready')
 
       checkout({
@@ -243,71 +224,65 @@ export default function BuySheet({ open, onClose, usdcRate, walletAddress, ngnAm
           logo:        'https://cryptologos.cc/logos/usd-coin-usdc-logo.png',
         },
         callback: (response: { status: string; tx_ref: string; transaction_id?: number }) => {
-          // Flutterwave calls this when payment is done
           if (response.status === 'successful' || response.status === 'completed') {
-            // Pass token + transaction_id for fast, authorized server-side verification
-            void verifyRef.current(ref, rawAmount.raw, token, response.transaction_id)
+            void verifyRef.current(ref, rawUsdc, token, response.transaction_id)
           } else {
             setErrorMsg(`Payment ${response.status} — please try again`)
             setStep('error')
           }
         },
         onclose: () => {
-          // User closed modal without completing — go back to input unless already delivering
-          setStep((prev) => (prev === 'paying' ? 'input' : prev))
+          setStep(prev => prev === 'paying' ? 'input' : prev)
         },
       })
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Something went wrong')
       setStep('error')
     }
-  }, [canPay, walletAddress, parsedNgn, customerEmail, loadFlwSdk])
+  }, [canPay, walletAddress, parsedNgn, customerEmail, loadFlwSdk, usdcRate])
 
   const handleClose = () => {
     setStep('input')
-    setNgnOverride(null)   // revert to initialNgn pre-fill on next open
+    setNgnOverride(null)
     setErrorMsg('')
     setTxHash(undefined)
+    setFinalUsdc('0.00')
+    setFinalNgn(0)
     onClose()
   }
 
-  const txUrl     = txHash ? buildTxExplorerUrl(ARC_TESTNET_CHAIN_ID, txHash) : undefined
-  const isLoading = step === 'paying' || step === 'verifying' || step === 'delivering'
+  const txUrl      = txHash ? buildTxUrl(txHash) : undefined
+  const isLoading  = step === 'paying' || step === 'verifying' || step === 'delivering'
+  const shortWallet = walletAddress
+    ? `${walletAddress.slice(0, 8)}…${walletAddress.slice(-6)}`
+    : '—'
 
   return (
     <AnimatePresence>
       {open && (
         <motion.div
           className="fixed inset-0 z-50 flex items-end justify-center"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
           onClick={handleClose}
         >
-          <div className="absolute inset-0 bg-black/25 backdrop-blur-sm" />
+          <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" />
           <motion.section
             className="relative w-full max-w-md overflow-hidden rounded-t-3xl"
-            style={{
-              background:            'var(--surface-strong)',
-              backdropFilter:        'blur(40px) saturate(200%)',
-              WebkitBackdropFilter:  'blur(40px) saturate(200%)',
-            }}
-            initial={{ y: '100%' }}
-            animate={{ y: 0 }}
-            exit={{ y: '100%' }}
+            style={{ background: 'var(--surface-strong)', backdropFilter: 'blur(40px) saturate(200%)', WebkitBackdropFilter: 'blur(40px) saturate(200%)' }}
+            initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
             transition={springs.sheet}
-            onClick={(e) => e.stopPropagation()}
+            onClick={e => e.stopPropagation()}
           >
             <div className="h-1" style={{ background: spectral }} />
             <div className="flex justify-center pt-3 pb-1">
-              <div className="h-1 w-10 rounded-full bg-black/10" />
+              <div className="h-1 w-10 rounded-full" style={{ background: 'var(--divider)' }} />
             </div>
 
             <div className="px-5 pb-8 pt-2">
               {/* Header */}
               <div className="mb-5 flex items-center justify-between">
-                <h2 className="display text-lg font-bold" style={{ color: 'var(--ink)' }}>
-                  Buy USDC
+                <h2 className="text-lg font-bold" style={{ color: 'var(--ink)' }}>
+                  {step === 'done' ? 'Transaction Receipt' : 'Buy USDC'}
                 </h2>
                 <button
                   onClick={handleClose}
@@ -318,56 +293,45 @@ export default function BuySheet({ open, onClose, usdcRate, walletAddress, ngnAm
                 </button>
               </div>
 
-              {/* ── Input / Error step ── */}
+              {/* ── INPUT / ERROR ── */}
               {(step === 'input' || step === 'error') && (
                 <div className="space-y-4">
-                  {/* Destination address */}
+                  {/* Destination */}
                   <div className="rounded-2xl px-4 py-3" style={glass.inner}>
-                    <p className="text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--muted)' }}>
-                      Sending to
-                    </p>
-                    <p className="mono mt-0.5 text-sm font-medium" style={{ color: 'var(--ink)' }}>
-                      {walletAddress
-                        ? `${walletAddress.slice(0, 10)}…${walletAddress.slice(-8)}`
-                        : '—'}
+                    <p className="text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--muted)' }}>Sending to</p>
+                    <p className="mono mt-0.5 text-sm font-medium" style={{ color: 'var(--ink)', wordBreak: 'break-all' }}>
+                      {walletAddress ?? '—'}
                     </p>
                   </div>
 
-                  {/* NGN amount input */}
+                  {/* NGN input */}
                   <div>
-                    <label
-                      className="mb-1.5 block text-xs font-semibold uppercase tracking-widest"
-                      style={{ color: 'var(--muted)' }}
-                    >
+                    <label className="mb-1.5 block text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--muted)' }}>
                       You Pay (Naira)
                     </label>
                     <div className="rounded-2xl p-4" style={glass.inner}>
                       <div className="flex items-baseline gap-2">
-                        <span className="display text-2xl font-bold" style={{ color: 'var(--muted)' }}>₦</span>
+                        <span className="text-2xl font-bold" style={{ color: 'var(--muted)' }}>₦</span>
                         <input
                           inputMode="numeric"
                           value={ngnAmount ? Number(ngnAmount).toLocaleString('en-NG') : ''}
-                          onChange={(e) => handleNgnInput(e.target.value.replace(/,/g, ''))}
+                          onChange={e => handleNgnInput(e.target.value.replace(/,/g, ''))}
                           placeholder="0"
-                          className="display w-full bg-transparent text-4xl font-bold tabular-nums outline-none placeholder:text-slate-300"
+                          className="w-full bg-transparent text-4xl font-bold tabular-nums outline-none placeholder:text-slate-300"
                           style={{ color: 'var(--ink)' }}
                         />
                       </div>
                       <p className="mt-1 text-xs" style={{ color: 'var(--subtle)' }}>Min ₦500</p>
                     </div>
-
-                    {/* Presets */}
                     <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
-                      {NGN_PRESETS.map((preset) => (
+                      {NGN_PRESETS.map(preset => (
                         <button
                           key={preset}
-                          onClick={() => setNgnAmount(String(preset))}
+                          onClick={() => setNgnOverride(String(preset))}
                           className="shrink-0 rounded-full px-3 py-1.5 text-xs font-semibold transition-all hover:scale-105 active:scale-95"
-                          style={
-                            ngnAmount === String(preset)
-                              ? { background: 'var(--accent)', color: 'white' }
-                              : glass.pill
-                          }
+                          style={ngnAmount === String(preset)
+                            ? { background: 'var(--accent)', color: 'white' }
+                            : glass.pill}
                         >
                           ₦{preset.toLocaleString('en-NG')}
                         </button>
@@ -375,36 +339,30 @@ export default function BuySheet({ open, onClose, usdcRate, walletAddress, ngnAm
                     </div>
                   </div>
 
-                  {/* USDC estimate */}
-                  <div className="rounded-2xl p-4" style={glass.inner}>
+                  {/* Quote — locked from main page, same rate */}
+                  <div className="rounded-2xl p-4" style={{ background: 'var(--accent-dim)', border: '1px solid rgba(82,179,110,0.22)' }}>
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--muted)' }}>
                         You Receive
                       </span>
                       <span className="text-xs" style={{ color: 'var(--subtle)' }}>
-                        Rate: ₦{usdcRate.toLocaleString('en-NG')} / USDC
+                        ₦{usdcRate.toLocaleString('en-NG')} / USDC · 1.5% fee
                       </span>
                     </div>
-                    <div className="mt-2 flex items-baseline gap-1.5">
-                      <span className="display text-3xl font-bold tabular-nums" style={{ color: 'var(--ink)' }}>
-                        {estimatedUsdc}
-                      </span>
-                      <span className="text-base font-semibold" style={{ color: 'var(--subtle)' }}>USDC</span>
+                    <div className="mt-2 flex items-center justify-between">
+                      <div className="flex items-baseline gap-1.5">
+                        <span className="text-3xl font-bold tabular-nums" style={{ color: 'var(--success)' }}>
+                          {estimatedUsdc}
+                        </span>
+                        <span className="text-base font-semibold" style={{ color: 'var(--muted)' }}>USDC</span>
+                      </div>
+                      <TokenUSDC variant="branded" size={24} />
                     </div>
-                  </div>
-
-                  {/* Fee */}
-                  <div className="flex items-center justify-between px-1 text-xs" style={{ color: 'var(--subtle)' }}>
-                    <span>Platform fee</span>
-                    <span className="font-semibold">1.5%</span>
                   </div>
 
                   {/* Error banner */}
                   {step === 'error' && (
-                    <div
-                      className="flex items-start gap-2 rounded-xl p-3 text-xs"
-                      style={{ background: 'rgba(192,57,43,0.08)', color: 'var(--danger)' }}
-                    >
+                    <div className="flex items-start gap-2 rounded-xl p-3 text-xs" style={{ background: 'rgba(192,57,43,0.08)', color: 'var(--danger)' }}>
                       <AlertCircle className="mt-0.5 size-4 shrink-0" />
                       <span>{errorMsg || 'Something went wrong. Please try again.'}</span>
                     </div>
@@ -418,107 +376,185 @@ export default function BuySheet({ open, onClose, usdcRate, walletAddress, ngnAm
                     style={{ background: 'var(--accent)' }}
                   >
                     {!isValidAmount
-                      ? 'Enter an amount'
+                      ? 'Enter an amount above'
                       : `Pay ₦${parsedNgn.toLocaleString('en-NG')} via Flutterwave`}
                     {canPay && <ChevronRight className="size-4" />}
                   </button>
 
                   <p className="text-center text-xs" style={{ color: 'var(--subtle)' }}>
-                    Secured by Flutterwave · Hokage
+                    Secured by Flutterwave · fifteen
                   </p>
                 </div>
               )}
 
-              {/* ── Paying step ── */}
+              {/* ── PAYING ── */}
               {step === 'paying' && (
                 <div className="space-y-4 py-8 text-center">
                   <div className="mx-auto flex size-16 items-center justify-center rounded-full" style={{ background: 'var(--arrow-bg)' }}>
                     <Loader2 className="size-8 animate-spin" style={{ color: 'var(--accent)' }} />
                   </div>
-                  <div>
-                    <p className="display font-bold" style={{ color: 'var(--ink)' }}>Waiting for Payment</p>
-                    <p className="mt-1 text-sm" style={{ color: 'var(--muted)' }}>
-                      Complete your payment in the Flutterwave checkout
-                    </p>
-                  </div>
-                  <p className="text-xs" style={{ color: 'var(--subtle)' }}>
-                    Ref: <span className="mono">{txRef}</span>
-                  </p>
+                  <p className="font-bold" style={{ color: 'var(--ink)' }}>Waiting for Payment</p>
+                  <p className="text-sm" style={{ color: 'var(--muted)' }}>Complete your payment in the Flutterwave checkout</p>
+                  {txRef && <p className="mono text-xs" style={{ color: 'var(--subtle)' }}>{txRef}</p>}
                 </div>
               )}
 
-              {/* ── Verifying step ── */}
+              {/* ── VERIFYING ── */}
               {step === 'verifying' && (
                 <div className="space-y-4 py-8 text-center">
-                  <div className="mx-auto flex size-16 items-center justify-center rounded-full" style={{ background: 'rgba(99,102,241,0.08)' }}>
+                  <div className="mx-auto flex size-16 items-center justify-center rounded-full" style={{ background: 'rgba(99,102,241,0.10)' }}>
                     <Loader2 className="size-8 animate-spin" style={{ color: '#6366f1' }} />
                   </div>
-                  <div>
-                    <p className="display font-bold" style={{ color: 'var(--ink)' }}>Confirming Payment…</p>
-                    <p className="mt-1 text-sm" style={{ color: 'var(--muted)' }}>
-                      Checking your payment with Flutterwave — this can take up to 60 seconds
-                    </p>
-                  </div>
-                  <p className="text-xs" style={{ color: 'var(--subtle)' }}>
-                    Ref: <span className="mono">{txRef}</span>
-                  </p>
+                  <p className="font-bold" style={{ color: 'var(--ink)' }}>Confirming Payment…</p>
+                  <p className="text-sm" style={{ color: 'var(--muted)' }}>Checking with Flutterwave — this can take up to 60 seconds</p>
+                  {txRef && <p className="mono text-xs" style={{ color: 'var(--subtle)' }}>Ref: {txRef}</p>}
                 </div>
               )}
 
-              {/* ── Delivering step ── */}
+              {/* ── DELIVERING ── */}
               {step === 'delivering' && (
                 <div className="space-y-4 py-8 text-center">
                   <div className="mx-auto flex size-16 items-center justify-center rounded-full" style={{ background: 'var(--accent-dim)' }}>
                     <Loader2 className="size-8 animate-spin" style={{ color: 'var(--success)' }} />
                   </div>
-                  <div>
-                    <p className="display font-bold" style={{ color: 'var(--ink)' }}>Delivering USDC…</p>
-                    <p className="mt-1 text-sm" style={{ color: 'var(--muted)' }}>
-                      Payment verified — sending USDC to your wallet
-                    </p>
-                  </div>
+                  <p className="font-bold" style={{ color: 'var(--ink)' }}>Delivering USDC…</p>
+                  <p className="text-sm" style={{ color: 'var(--muted)' }}>Payment verified — sending USDC to your wallet</p>
                 </div>
               )}
 
-              {/* ── Done step ── */}
+              {/* ── DONE — Full receipt ── */}
               {step === 'done' && (
-                <div className="space-y-4 py-6 text-center">
-                  <div className="mx-auto flex size-16 items-center justify-center rounded-full" style={{ background: 'var(--accent-dim)' }}>
-                    <CheckCircle2 className="size-8" style={{ color: 'var(--success)' }} />
-                  </div>
-                  <div>
-                    <p className="display text-xl font-bold" style={{ color: 'var(--ink)' }}>USDC Delivered!</p>
-                    <p className="mt-1 text-sm" style={{ color: 'var(--muted)' }}>
-                      <span className="font-semibold tabular-nums" style={{ color: 'var(--success)' }}>
-                        {Amount.fromRaw(usdcToDeliver, 6).toFixed(2)} USDC
-                      </span>{' '}
-                      is on its way to your wallet
-                    </p>
-                  </div>
-                  {txUrl && (
-                    <a
-                      href={txUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1.5 rounded-xl px-4 py-2.5 text-xs font-semibold hover:underline"
-                      style={{ background: 'var(--accent-dim)', color: 'var(--accent)' }}
-                    >
-                      View on ArcScan <ExternalLink className="size-3" />
-                    </a>
-                  )}
-                  <button
-                    onClick={handleClose}
-                    className="w-full rounded-2xl py-3.5 text-sm font-bold text-white"
-                    style={{ background: 'var(--accent)' }}
-                  >
-                    Done
-                  </button>
-                </div>
+                <ReceiptView
+                  finalUsdc={finalUsdc}
+                  finalNgn={finalNgn}
+                  lockedRate={lockedRate}
+                  txRef={txRef}
+                  txHash={txHash}
+                  txUrl={txUrl}
+                  shortWallet={shortWallet}
+                  walletAddress={walletAddress}
+                  onClose={handleClose}
+                />
               )}
             </div>
           </motion.section>
         </motion.div>
       )}
     </AnimatePresence>
+  )
+}
+
+// ── Receipt component ─────────────────────────────────────────────────────────
+function ReceiptRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="flex items-center justify-between py-2.5" style={{ borderBottom: '1px solid var(--divider)' }}>
+      <span className="text-xs" style={{ color: 'var(--muted)' }}>{label}</span>
+      <span className={`text-xs font-semibold ${mono ? 'font-mono' : ''}`} style={{ color: 'var(--ink)' }}>{value}</span>
+    </div>
+  )
+}
+
+interface ReceiptProps {
+  finalUsdc:     string
+  finalNgn:      number
+  lockedRate:    number
+  txRef:         string
+  txHash?:       string
+  txUrl?:        string
+  shortWallet:   string
+  walletAddress: `0x${string}` | undefined
+  onClose:       () => void
+}
+
+function ReceiptView({ finalUsdc, finalNgn, lockedRate, txRef, txHash, txUrl, shortWallet, walletAddress, onClose }: ReceiptProps) {
+  const { copied: refCopied, copy: copyRef } = useCopy(txRef)
+  const { copied: hashCopied, copy: copyHash } = useCopy(txHash ?? '')
+
+  // Unused var required so ARC_TESTNET_CHAIN_ID doesn't trip lint
+  void ARC_TESTNET_CHAIN_ID
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.25 }}
+      className="space-y-4"
+    >
+      {/* Success hero */}
+      <div className="flex flex-col items-center gap-2 py-4">
+        <div className="flex size-16 items-center justify-center rounded-full" style={{ background: 'var(--accent-dim)' }}>
+          <CheckCircle2 className="size-9" style={{ color: 'var(--success)' }} />
+        </div>
+        <p className="text-xl font-bold" style={{ color: 'var(--ink)' }}>USDC Delivered!</p>
+        <div className="flex items-baseline gap-1">
+          <span className="text-3xl font-bold tabular-nums" style={{ color: 'var(--success)' }}>{finalUsdc}</span>
+          <span className="text-base font-semibold" style={{ color: 'var(--muted)' }}>USDC</span>
+        </div>
+        <p className="text-xs" style={{ color: 'var(--subtle)' }}>sent to {shortWallet}</p>
+      </div>
+
+      {/* Receipt card */}
+      <div className="rounded-2xl px-4 py-1" style={glass.inner}>
+        <ReceiptRow label="You Paid" value={`₦${finalNgn.toLocaleString('en-NG')}`} />
+        <ReceiptRow label="You Received" value={`${finalUsdc} USDC`} />
+        <ReceiptRow label="Rate Used" value={`₦${lockedRate.toLocaleString('en-NG')} / USDC`} />
+        <ReceiptRow label="Platform Fee" value="1.5%" />
+        <ReceiptRow label="Network" value="Arc Testnet" />
+        <ReceiptRow
+          label="Destination"
+          value={walletAddress ? `${walletAddress.slice(0,10)}…${walletAddress.slice(-6)}` : '—'}
+          mono
+        />
+        <div className="flex items-center justify-between py-2.5">
+          <span className="text-xs" style={{ color: 'var(--muted)' }}>Transaction Ref</span>
+          <button
+            onClick={copyRef}
+            className="flex items-center gap-1 text-xs font-semibold"
+            style={{ color: 'var(--accent)' }}
+          >
+            <span className="font-mono">{txRef.length > 20 ? txRef.slice(-16) : txRef}</span>
+            {refCopied ? <Check className="size-3" /> : <Copy className="size-3" />}
+          </button>
+        </div>
+        {txHash && (
+          <div className="flex items-center justify-between py-2.5">
+            <span className="text-xs" style={{ color: 'var(--muted)' }}>On-chain Tx</span>
+            <button
+              onClick={copyHash}
+              className="flex items-center gap-1 text-xs font-semibold"
+              style={{ color: 'var(--accent)' }}
+            >
+              <span className="font-mono">{txHash.slice(0, 8)}…{txHash.slice(-6)}</span>
+              {hashCopied ? <Check className="size-3" /> : <Copy className="size-3" />}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Explorer link */}
+      {txUrl && (
+        <a
+          href={txUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="flex w-full items-center justify-center gap-1.5 rounded-xl py-2.5 text-xs font-semibold hover:opacity-80"
+          style={{ background: 'var(--accent-dim)', color: 'var(--accent)' }}
+        >
+          View on ArcScan <ExternalLink className="size-3" />
+        </a>
+      )}
+
+      <button
+        onClick={onClose}
+        className="w-full rounded-2xl py-3.5 text-sm font-bold text-white transition-all hover:scale-[1.01] active:scale-[0.99]"
+        style={{ background: 'var(--accent)' }}
+      >
+        Done
+      </button>
+
+      <p className="text-center text-xs" style={{ color: 'var(--subtle)' }}>
+        Powered by Flutterwave · fifteen
+      </p>
+    </motion.div>
   )
 }

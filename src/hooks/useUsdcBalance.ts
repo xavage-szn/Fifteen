@@ -51,8 +51,9 @@ export function useUsdcBalance(address: `0x${string}` | undefined) {
         if (activeAddress.current === addrSnapshot) {
           setFormatted((Number(raw) / 10 ** USDC_DECIMALS).toFixed(2))
         }
-      } catch {
-        if (activeAddress.current === addrSnapshot) setFormatted('—')
+      } catch (err) {
+        console.warn('[useUsdcBalance] balanceOf failed:', err)
+        if (activeAddress.current === addrSnapshot) setFormatted('0.00')
       } finally {
         if (activeAddress.current === addrSnapshot) setIsLoading(false)
       }

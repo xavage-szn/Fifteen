@@ -361,6 +361,7 @@ export default function App() {
         usdcRate={usdcRate}
         walletAddress={walletAddress}
         ngnAmount={parsedNgn}
+        lockedUsdcAmount={usdcOut > 0 ? usdcOut.toFixed(2) : undefined}
       />
     </div>
   )
