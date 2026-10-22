@@ -25,7 +25,6 @@
 
 import { Hono } from 'hono'
 import { serve } from '@hono/node-server'
-import { serveStatic } from '@hono/node-server/serve-static'
 import { cors } from 'hono/cors'
 import { createHash, createHmac, randomBytes } from 'node:crypto'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
@@ -846,13 +845,46 @@ app.get('/treasury/status', async (c) => {
 })
 
 // ─── Static file serving (production only) ───────────────────────────────────
-// In production (`bun start`), the Hono server serves the Vite-built frontend
-// from ./dist/ on the same port. In dev, Vite's dev server handles the frontend
-// on port 5173 and proxies /api/* to this server on 3001.
 if (process.env.NODE_ENV === 'production') {
-  app.use('/*', serveStatic({ root: './dist' }))
-  // SPA fallback — all unmatched routes serve index.html so client-side routing works
-  app.get('*', serveStatic({ path: './dist/index.html' }))
+  const { readFileSync, existsSync } = await import('node:fs')
+  const { extname, resolve } = await import('node:path')
+  const DIST = resolve(process.cwd(), 'dist')
+  const MIME: Record<string, string> = {
+    '.html': 'text/html; charset=utf-8',
+    '.js':   'application/javascript',
+    '.mjs':  'application/javascript',
+    '.css':  'text/css',
+    '.svg':  'image/svg+xml',
+    '.png':  'image/png',
+    '.ico':  'image/x-icon',
+    '.json': 'application/json',
+    '.woff2':'font/woff2',
+    '.woff': 'font/woff',
+    '.ttf':  'font/ttf',
+    '.map':  'application/json',
+  }
+  app.use('*', async (c, next) => {
+    // skip API routes — already handled above
+    if (c.req.path.startsWith('/api/') || c.req.path.startsWith('/admin/stream')) {
+      return next()
+    }
+    const url = c.req.path === '/' ? '/index.html' : c.req.path
+    const filePath = resolve(DIST, '.' + url)
+    // security: ensure resolved path stays inside dist/
+    if (!filePath.startsWith(DIST)) return c.text('Forbidden', 403)
+    if (existsSync(filePath)) {
+      const ext = extname(filePath)
+      const mime = MIME[ext] ?? 'application/octet-stream'
+      const body = readFileSync(filePath)
+      return c.body(body, 200, { 'Content-Type': mime })
+    }
+    // SPA fallback — serve index.html for all non-asset unmatched routes
+    const index = resolve(DIST, 'index.html')
+    if (existsSync(index)) {
+      return c.html(readFileSync(index, 'utf-8'))
+    }
+    return c.text('Not found', 404)
+  })
 }
 
 // ─── Start ────────────────────────────────────────────────────────────────────
