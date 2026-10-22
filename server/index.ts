@@ -338,13 +338,13 @@ function log(
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
 // GET /rate
-app.get('/rate', async (c) => {
+app.get('/api/rate', async (c) => {
   const rate = await fetchNgnUsdcRate()
   return c.json({ ngnPerUsdc: rate })
 })
 
 // POST /flw/initialize — create a Flutterwave hosted payment link
-app.post('/flw/initialize', async (c) => {
+app.post('/api/flw/initialize', async (c) => {
   const ip = clientIp(c)
   if (!checkRateLimit(ip, 'initialize', 5, 60_000))
     return c.json({ error: 'Too many requests. Please wait a minute and try again.' }, 429)
@@ -439,7 +439,7 @@ app.post('/flw/initialize', async (c) => {
 // RETRY LOGIC: Flutterwave has a processing lag — a completed transaction may not
 // appear in GET /transactions?tx_ref=... for several seconds. We retry with
 // exponential backoff (2s, 4s, 8s, 16s, 32s) before giving up.
-app.get('/flw/verify/:tx_ref', async (c) => {
+app.get('/api/flw/verify/:tx_ref', async (c) => {
   const ip    = clientIp(c)
   if (!checkRateLimit(ip, 'verify', 10, 60_000))
     return c.json({ error: 'Too many requests.' }, 429)
@@ -582,7 +582,7 @@ app.get('/flw/verify/:tx_ref', async (c) => {
 // ATOMIC RULE: status is set to 'delivering' under a synchronous lock BEFORE
 // the on-chain write so a second parallel request sees 'delivering' and is
 // rejected — preventing a double-spend race condition.
-app.post('/flw/deliver', async (c) => {
+app.post('/api/flw/deliver', async (c) => {
   const ip = clientIp(c)
   if (!checkRateLimit(ip, 'deliver', 5, 60_000))
     return c.json({ error: 'Too many requests.' }, 429)
@@ -672,7 +672,7 @@ app.post('/flw/deliver', async (c) => {
 // the Flutterwave Inline SDK. Keeps the secret key server-side at all times.
 // Inputs: amount (NGN number), currency, customer_email, tx_ref
 // Output: { payload_hash: string }
-app.post('/flw/payload-hash', async (c) => {
+app.post('/api/flw/payload-hash', async (c) => {
   const { amount, currency, customer_email, tx_ref } =
     await c.req.json<{ amount: number; currency: string; customer_email: string; tx_ref: string }>()
 
@@ -691,7 +691,7 @@ app.post('/flw/payload-hash', async (c) => {
 })
 
 // GET /admin/stream — SSE live transaction log feed (admin-only via Supabase JWT)
-app.get('/admin/stream', (c) => {
+app.get('/api/admin/stream', (c) => {
   // Validate Supabase JWT from Authorization header
   const authHeader = c.req.header('authorization') ?? ''
   if (!authHeader.startsWith('Bearer ') || authHeader.length < 20) {
@@ -718,7 +718,7 @@ app.get('/admin/stream', (c) => {
 })
 
 // POST /admin/retry/:tx_ref — manually retry a failed/stuck delivery
-app.post('/admin/retry/:tx_ref', async (c) => {
+app.post('/api/admin/retry/:tx_ref', async (c) => {
   const authHeader = c.req.header('authorization') ?? ''
   if (!authHeader.startsWith('Bearer ') || authHeader.length < 20)
     return c.json({ error: 'Unauthorized' }, 401)
@@ -775,7 +775,7 @@ app.post('/admin/retry/:tx_ref', async (c) => {
 })
 
 // GET /admin/transactions — paginated transaction list for admin console
-app.get('/admin/transactions', async (c) => {
+app.get('/api/admin/transactions', async (c) => {
   const authHeader = c.req.header('authorization') ?? ''
   if (!authHeader.startsWith('Bearer ') || authHeader.length < 20)
     return c.json({ error: 'Unauthorized' }, 401)
@@ -799,7 +799,7 @@ app.get('/admin/transactions', async (c) => {
 })
 
 // GET /admin/transactions/:tx_ref/logs — logs for one transaction
-app.get('/admin/transactions/:tx_ref/logs', async (c) => {
+app.get('/api/admin/transactions/:tx_ref/logs', async (c) => {
   const authHeader = c.req.header('authorization') ?? ''
   if (!authHeader.startsWith('Bearer ') || authHeader.length < 20)
     return c.json({ error: 'Unauthorized' }, 401)
@@ -816,7 +816,7 @@ app.get('/admin/transactions/:tx_ref/logs', async (c) => {
 })
 
 // GET /admin/stats — aggregate metrics
-app.get('/admin/stats', async (c) => {
+app.get('/api/admin/stats', async (c) => {
   const authHeader = c.req.header('authorization') ?? ''
   if (!authHeader.startsWith('Bearer ') || authHeader.length < 20)
     return c.json({ error: 'Unauthorized' }, 401)
@@ -829,7 +829,7 @@ app.get('/admin/stats', async (c) => {
 
 // GET /api/balance/:address — proxy balanceOf through the server
 // (avoids any browser-side CORS / network restrictions reaching Arc RPC directly)
-app.get('/balance/:address', async (c) => {
+app.get('/api/balance/:address', async (c) => {
   const addr = c.req.param('address')
   if (!/^0x[0-9a-fA-F]{40}$/i.test(addr)) return c.json({ error: 'Invalid address' }, 400)
   try {
@@ -845,7 +845,7 @@ app.get('/balance/:address', async (c) => {
 })
 
 // GET /treasury/status — ops health check
-app.get('/treasury/status', async (c) => {
+app.get('/api/treasury/status', async (c) => {
   const clients = getTreasuryClients()
   if (!clients) return c.json({ configured: false, message: 'TREASURY_PRIVATE_KEY not set' })
 
