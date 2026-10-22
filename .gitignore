@@ -34,3 +34,4 @@ console.jsonl
 Thumbs.db
 .vscode/
 .idea/
+render.env
