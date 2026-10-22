@@ -2,6 +2,11 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Prevent iOS/Android zoom on input focus */
+input, select, textarea {
+  font-size: 16px !important;
+}
+
 /* ── 15market brand tokens — LIGHT ─────────────────────────────────────────── */
 :root {
   --brand:          #52b36e;   /* logo green */

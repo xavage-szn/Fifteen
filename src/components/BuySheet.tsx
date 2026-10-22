@@ -56,7 +56,6 @@ export default function BuySheet({
   const [finalUsdc,  setFinalUsdc]  = useState(lockedUsdcAmount ?? '0.00')
   const [finalNgn,   setFinalNgn]   = useState(initialNgn ?? 0)
   const [txRef,      setTxRef]      = useState('')
-  const [lockedRate, setLockedRate] = useState(usdcRate)
 
   const parsedNgn     = initialNgn ?? 0
   const displayUsdc   = lockedUsdcAmount ?? '0.00'
@@ -149,7 +148,6 @@ export default function BuySheet({
       setTxRef(ref)
       setFinalUsdc(usdcAmount)
       setFinalNgn(parsedNgn)
-      setLockedRate(usdcRate)
       const rawUsdc = usdcToRaw(usdcAmount)
 
       // Payload hash (tamper-proofing, best-effort)
@@ -228,7 +226,7 @@ export default function BuySheet({
           <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" />
           <motion.section
             className="relative w-full max-w-md overflow-hidden rounded-t-3xl"
-            style={{ background: 'var(--surface-strong)', backdropFilter: 'blur(40px) saturate(200%)', WebkitBackdropFilter: 'blur(40px) saturate(200%)' }}
+            style={{ maxHeight: '92dvh', background: 'var(--surface-strong)', backdropFilter: 'blur(40px) saturate(200%)', WebkitBackdropFilter: 'blur(40px) saturate(200%)' }}
             initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
             transition={springs.sheet}
             onClick={e => e.stopPropagation()}
@@ -239,7 +237,7 @@ export default function BuySheet({
               <div className="h-1 w-10 rounded-full" style={{ background: 'var(--divider)' }} />
             </div>
 
-            <div className="px-5 pb-8 pt-2">
+            <div className="overflow-y-auto px-5 pb-8 pt-2" style={{ maxHeight: 'calc(92dvh - 32px)' }}>
               {/* Header */}
               <div className="mb-5 flex items-center justify-between">
                 <h2 className="text-lg font-bold" style={{ color: 'var(--ink)' }}>
@@ -281,7 +279,7 @@ export default function BuySheet({
                       <TokenUSDC variant="branded" size={28} />
                     </div>
                     <p className="mt-1 text-xs" style={{ color: 'var(--subtle)' }}>
-                      Rate ₦{usdcRate.toLocaleString('en-NG')} · 1.5% fee · Arc Testnet
+                      Live rate · Arc Testnet
                     </p>
                   </div>
 
@@ -361,7 +359,6 @@ export default function BuySheet({
                 <ReceiptView
                   finalUsdc={finalUsdc}
                   finalNgn={finalNgn}
-                  lockedRate={lockedRate}
                   txRef={txRef}
                   txHash={txHash}
                   txUrl={txUrl}
@@ -390,7 +387,6 @@ function ReceiptRow({ label, value, mono }: { label: string; value: string; mono
 interface ReceiptProps {
   finalUsdc:     string
   finalNgn:      number
-  lockedRate:    number
   txRef:         string
   txHash?:       string
   txUrl?:        string
@@ -398,7 +394,7 @@ interface ReceiptProps {
   onClose:       () => void
 }
 
-function ReceiptView({ finalUsdc, finalNgn, lockedRate, txRef, txHash, txUrl, walletAddress, onClose }: ReceiptProps) {
+function ReceiptView({ finalUsdc, finalNgn, txRef, txHash, txUrl, walletAddress, onClose }: ReceiptProps) {
   const { copied: refCopied,  copy: copyRef  } = useCopy(txRef)
   const { copied: hashCopied, copy: copyHash } = useCopy(txHash ?? '')
 
@@ -425,8 +421,6 @@ function ReceiptView({ finalUsdc, finalNgn, lockedRate, txRef, txHash, txUrl, wa
       <div className="rounded-2xl px-4 py-1" style={{ background: 'var(--glass-soft-bg)', border: '1px solid var(--glass-soft-border)' }}>
         <ReceiptRow label="You Paid"     value={`₦${finalNgn.toLocaleString('en-NG')}`} />
         <ReceiptRow label="You Received" value={`${finalUsdc} USDC`} />
-        <ReceiptRow label="Rate Used"    value={`₦${lockedRate.toLocaleString('en-NG')} / USDC`} />
-        <ReceiptRow label="Platform Fee" value="1.5%" />
         <ReceiptRow label="Network"      value="Arc Testnet" />
         <ReceiptRow
           label="Destination"
@@ -469,7 +463,7 @@ function ReceiptView({ finalUsdc, finalNgn, lockedRate, txRef, txHash, txUrl, wa
       </button>
 
       <p className="text-center text-xs" style={{ color: 'var(--subtle)' }}>
-        Powered by Flutterwave · fifteen
+        Powered by Flutterwave
       </p>
     </motion.div>
   )

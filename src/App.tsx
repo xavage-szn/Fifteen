@@ -87,7 +87,7 @@ export default function App() {
   }
 
   return (
-    <div className="relative min-h-dvh overflow-hidden" style={{ background: 'var(--bg-gradient)' }}>
+    <div className="relative flex h-dvh flex-col overflow-hidden" style={{ background: 'var(--bg-gradient)' }}>
 
       {/* Ambient blobs — only visible in light mode */}
       {!dark && (
@@ -97,7 +97,7 @@ export default function App() {
         </div>
       )}
 
-      <div className="relative z-10 mx-auto max-w-md px-4 pb-12 pt-6">
+      <div className="relative z-10 mx-auto flex w-full max-w-md flex-1 flex-col overflow-y-auto px-4 pb-6 pt-5">
 
         {/* ── Header ──────────────────────────────────────────────────────── */}
         <header className="mb-6 flex items-center justify-between">
@@ -149,7 +149,7 @@ export default function App() {
                 />
                 <span className="shrink-0 rounded-full px-2 py-0.5 text-xs font-bold" style={{ background:'var(--accent-dim)', color:'var(--ngn)' }}>NGN</span>
               </div>
-              <p className="mt-1 text-xs" style={{ color:'var(--subtle)' }}>Min ₦500 · 1.5% fee included</p>
+              <p className="mt-1 text-xs" style={{ color:'var(--subtle)' }}>Min ₦500</p>
             </div>
 
             {/* Quick presets */}
@@ -195,9 +195,7 @@ export default function App() {
                 <TokenUSDC variant="branded" size={28} />
               </div>
               <p className="mt-1 text-xs" style={{ color:'var(--subtle)' }}>
-                {hasAmount
-                  ? `Rate ₦${usdcRate.toLocaleString('en-NG')} · parallel market`
-                  : 'Enter an amount above'}
+                {hasAmount ? 'Live rate applied' : 'Enter an amount above'}
               </p>
             </div>
           </div>
@@ -350,7 +348,7 @@ export default function App() {
           </div>
 
           <p className="text-center text-xs" style={{ color:'var(--subtle)' }}>
-            Powered by Flutterwave · Rates by Monierate parallel market
+            Powered by Flutterwave
           </p>
         </main>
       </div>
