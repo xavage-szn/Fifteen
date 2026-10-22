@@ -1,74 +1,45 @@
 import { useState, useEffect, useRef } from 'react'
-import { createPublicClient, http, erc20Abi } from 'viem'
-
-// Arc Testnet constants — inlined because this repo has no @/onchain-facts module
-const ARC_TESTNET_RPC      = 'https://rpc.testnet.arc.io'
-const USDC_ADDRESS         = '0x3600000000000000000000000000000000000000' as const
-const USDC_DECIMALS        = 6
-
-const arcViemChain = {
-  id:             5042002,
-  name:           'Arc Testnet',
-  nativeCurrency: { name: 'USDC', symbol: 'USDC', decimals: 18 },
-  rpcUrls:        { default: { http: [ARC_TESTNET_RPC] } },
-} as const
-
-const publicClient = createPublicClient({
-  chain:     arcViemChain,
-  transport: http(ARC_TESTNET_RPC),
-})
 
 /**
- * Reads the USDC ERC-20 balance on Arc Testnet for any EVM address.
- * Uses a direct viem publicClient (not wagmi) to always hit the correct RPC.
- * Refreshes every 15 s automatically.
+ * Reads the USDC balance on Arc Testnet for any EVM address.
+ * Calls through the backend proxy (/api/balance/:address) so the browser
+ * never has to reach the Arc RPC directly — avoids any CORS / network issues.
+ * Refreshes every 15 seconds automatically.
  */
 export function useUsdcBalance(address: `0x${string}` | undefined) {
-  const [formatted, setFormatted] = useState<string | null>(null)
-  const [isLoading, setIsLoading] = useState(false)
-  const intervalRef   = useRef<ReturnType<typeof setInterval> | null>(null)
-  const activeAddress = useRef<string | undefined>(undefined)
+  const [formatted,  setFormatted]  = useState<string | null>(null)
+  const [isLoading,  setIsLoading]  = useState(false)
+  const intervalRef  = useRef<ReturnType<typeof setInterval> | null>(null)
+  const activeAddr   = useRef<string | undefined>(undefined)
 
   useEffect(() => {
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current)
-      intervalRef.current = null
-    }
-
-    activeAddress.current = address
-
+    if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null }
+    activeAddr.current = address
     if (!address) return
 
-    async function fetchBalance(addrSnapshot: string) {
+    async function fetchBalance(snap: string) {
       setIsLoading(true)
       try {
-        const raw = await publicClient.readContract({
-          address:      USDC_ADDRESS,
-          abi:          erc20Abi,
-          functionName: 'balanceOf',
-          args:         [addrSnapshot as `0x${string}`],
-        })
-        if (activeAddress.current === addrSnapshot) {
-          setFormatted((Number(raw) / 10 ** USDC_DECIMALS).toFixed(2))
+        const res  = await fetch(`/api/balance/${snap}`)
+        const data = await res.json() as { balance?: string; error?: string }
+        if (activeAddr.current === snap) {
+          setFormatted(data.balance ?? '0.00')
         }
       } catch (err) {
-        console.warn('[useUsdcBalance] balanceOf failed:', err)
-        if (activeAddress.current === addrSnapshot) setFormatted('0.00')
+        console.warn('[useUsdcBalance] fetch failed:', err)
+        if (activeAddr.current === snap) setFormatted('0.00')
       } finally {
-        if (activeAddress.current === addrSnapshot) setIsLoading(false)
+        if (activeAddr.current === snap) setIsLoading(false)
       }
     }
 
     void fetchBalance(address)
     intervalRef.current = setInterval(() => { void fetchBalance(address) }, 15_000)
-
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current)
-    }
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
   }, [address])
 
-  const effectiveFormatted = address ? formatted : null
-  const effectiveLoading   = address ? isLoading  : false
-
-  return { formatted: effectiveFormatted, isLoading: effectiveLoading }
+  return {
+    formatted: address ? formatted : null,
+    isLoading: address ? isLoading : false,
+  }
 }

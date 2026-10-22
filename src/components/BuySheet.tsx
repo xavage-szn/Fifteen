@@ -1,10 +1,9 @@
-import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import { useState, useCallback, useRef, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Loader2, CheckCircle2, ExternalLink, AlertCircle, ChevronRight, Copy, Check } from 'lucide-react'
+import { X, Loader2, CheckCircle2, ExternalLink, AlertCircle, Copy, Check, ShieldCheck } from 'lucide-react'
 import { TokenUSDC } from '@web3icons/react'
 
-const ARC_EXPLORER_BASE   = 'https://explorer.testnet.arc.io/tx/'
-const ARC_TESTNET_CHAIN_ID = 5042002
+const ARC_EXPLORER_BASE = 'https://explorer.testnet.arc.io/tx/'
 function buildTxUrl(hash: string) { return `${ARC_EXPLORER_BASE}${hash}` }
 
 const USDC_DECIMALS = 6
@@ -14,28 +13,12 @@ function usdcToRaw(human: string): bigint {
 }
 
 const spectral = 'linear-gradient(90deg, #5fbeff, #af8ff4, #f05c6b, #ffcd83, #7ef1b3)'
-
 const glass = {
-  inner: {
-    background: 'var(--glass-soft-bg)',
-    border: '1px solid var(--glass-soft-border)',
-  } as React.CSSProperties,
-  pill: {
-    background: 'var(--pill-bg)',
-    backdropFilter: 'blur(12px)',
-    WebkitBackdropFilter: 'blur(12px)',
-    border: '1px solid var(--pill-border)',
-  } as React.CSSProperties,
+  inner: { background: 'var(--glass-soft-bg)', border: '1px solid var(--glass-soft-border)' } as React.CSSProperties,
 }
-
 const springs = { sheet: { type: 'spring' as const, stiffness: 360, damping: 40 } }
-const NGN_PRESETS = [1000, 2500, 5000, 10000, 25000]
 
-interface FlwInitResponse {
-  tx_ref:      string
-  usdcAmount:  string
-  accessToken: string
-}
+interface FlwInitResponse  { tx_ref: string; usdcAmount: string; accessToken: string }
 interface FlwVerifyResponse { success: boolean; status: string }
 interface FlwDeliverResponse { success: boolean; usdcAmount: string; txHash: string | null }
 
@@ -49,7 +32,8 @@ interface BuySheetProps {
   lockedUsdcAmount?: string
 }
 
-type Step = 'input' | 'paying' | 'verifying' | 'delivering' | 'done' | 'error'
+// 'confirm' = show locked quote summary, user clicks Pay → Flutterwave opens
+type Step = 'confirm' | 'paying' | 'verifying' | 'delivering' | 'done' | 'error'
 
 function useCopy(text: string) {
   const [copied, setCopied] = useState(false)
@@ -66,33 +50,17 @@ export default function BuySheet({
   open, onClose, usdcRate, walletAddress,
   ngnAmount: initialNgn, lockedUsdcAmount,
 }: BuySheetProps) {
-  const [ngnOverride,     setNgnOverride]     = useState<string | null>(null)
-  const [step,            setStep]            = useState<Step>('input')
-  const [errorMsg,        setErrorMsg]        = useState('')
-  const [txHash,          setTxHash]          = useState<string | undefined>()
-  const [finalUsdc,       setFinalUsdc]       = useState('0.00')   // confirmed USDC from server
-  const [finalNgn,        setFinalNgn]        = useState(0)        // locked NGN at payment time
-  const [txRef,           setTxRef]           = useState('')
-  const [lockedRate,      setLockedRate]      = useState(usdcRate)
+  const [step,       setStep]       = useState<Step>('confirm')
+  const [errorMsg,   setErrorMsg]   = useState('')
+  const [txHash,     setTxHash]     = useState<string | undefined>()
+  const [finalUsdc,  setFinalUsdc]  = useState(lockedUsdcAmount ?? '0.00')
+  const [finalNgn,   setFinalNgn]   = useState(initialNgn ?? 0)
+  const [txRef,      setTxRef]      = useState('')
+  const [lockedRate, setLockedRate] = useState(usdcRate)
 
-  // Active NGN amount — user override > pre-fill
-  const ngnAmount    = ngnOverride ?? (initialNgn ? String(initialNgn) : '')
-  const parsedNgn    = parseFloat(ngnAmount) || 0
-
-  // USDC estimate — if the main page passed a locked amount, use it to stay consistent
-  // Otherwise fall back to live calculation (no fee, sheet-internal)
-  const estimatedUsdc = useMemo(() => {
-    if (lockedUsdcAmount && !ngnOverride) return lockedUsdcAmount
-    return parsedNgn > 0 ? (parsedNgn / usdcRate).toFixed(2) : '0.00'
-  }, [lockedUsdcAmount, ngnOverride, parsedNgn, usdcRate])
-
-  const isValidAmount = parsedNgn >= 500
-  const canPay        = isValidAmount && !!walletAddress
-
-  const handleNgnInput = (val: string) => setNgnOverride(val.replace(/[^0-9]/g, ''))
-
-  // Ref pattern for verifyAndDeliver (avoids circular deps in useCallback)
-  const verifyRef = useRef<(ref: string, rawUsdc: bigint, token: string, flwTxId?: number) => Promise<void>>(async () => {})
+  const parsedNgn     = initialNgn ?? 0
+  const displayUsdc   = lockedUsdcAmount ?? '0.00'
+  const canPay        = parsedNgn >= 500 && !!walletAddress
 
   const verifyAndDeliver = useCallback(async (ref: string, rawUsdc: bigint, token: string, flwTxId?: number) => {
     setStep('verifying')
@@ -118,8 +86,8 @@ export default function BuySheet({
       setStep('delivering')
       let deliverData: FlwDeliverResponse | undefined
       for (let attempt = 0; attempt < 3; attempt++) {
-        const deliverRes  = await fetch('/api/flw/deliver', {
-          method: 'POST',
+        const deliverRes = await fetch('/api/flw/deliver', {
+          method:  'POST',
           headers: { 'Content-Type': 'application/json', 'X-Order-Token': token },
           body:    JSON.stringify({ tx_ref: ref, walletAddress, accessToken: token }),
         })
@@ -131,7 +99,6 @@ export default function BuySheet({
       }
       if (!deliverData) throw new Error('Delivery timed out — contact support with ref: ' + ref)
 
-      // Lock the final delivered amount from the server response (source of truth)
       setFinalUsdc(deliverData.usdcAmount || rawToUsdc(rawUsdc))
       if (deliverData.txHash) setTxHash(deliverData.txHash)
       setStep('done')
@@ -141,18 +108,16 @@ export default function BuySheet({
     }
   }, [walletAddress])
 
-  useEffect(() => { verifyRef.current = verifyAndDeliver }, [verifyAndDeliver])
-
   const sdkLoaded = useRef(false)
   const loadFlwSdk = useCallback((): Promise<void> => {
     if (sdkLoaded.current) return Promise.resolve()
     return new Promise((resolve, reject) => {
       if (document.getElementById('flw-sdk')) { sdkLoaded.current = true; resolve(); return }
-      const script    = document.createElement('script')
-      script.id       = 'flw-sdk'
-      script.src      = 'https://checkout.flutterwave.com/v3.js'
-      script.onload   = () => { sdkLoaded.current = true; resolve() }
-      script.onerror  = () => reject(new Error('Failed to load Flutterwave SDK'))
+      const script  = document.createElement('script')
+      script.id     = 'flw-sdk'
+      script.src    = 'https://checkout.flutterwave.com/v3.js'
+      script.onload  = () => { sdkLoaded.current = true; resolve() }
+      script.onerror = () => reject(new Error('Failed to load Flutterwave SDK'))
       document.head.appendChild(script)
     })
   }, [])
@@ -171,24 +136,23 @@ export default function BuySheet({
     try {
       await loadFlwSdk()
 
-      const initRes = await fetch('/api/flw/initialize', {
+      // Init — single .json() call, correctly consuming the body once
+      const initRes  = await fetch('/api/flw/initialize', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ amount: parsedNgn, walletAddress, email: customerEmail }),
       })
-      if (!initRes.ok) {
-        const body = await initRes.json() as { error?: string }
-        throw new Error(body.error ?? 'Could not create payment link')
-      }
-      const { tx_ref: ref, usdcAmount, accessToken: token } = await initRes.json() as FlwInitResponse
+      const initBody = await initRes.json() as FlwInitResponse & { error?: string }
+      if (!initRes.ok) throw new Error(initBody.error ?? 'Could not create payment link')
 
-      // Lock the NGN and rate at payment time so the receipt matches exactly
+      const { tx_ref: ref, usdcAmount, accessToken: token } = initBody
       setTxRef(ref)
       setFinalUsdc(usdcAmount)
       setFinalNgn(parsedNgn)
       setLockedRate(usdcRate)
       const rawUsdc = usdcToRaw(usdcAmount)
 
+      // Payload hash (tamper-proofing, best-effort)
       const hashRes = await fetch('/api/flw/payload-hash', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -199,12 +163,12 @@ export default function BuySheet({
         : { payload_hash: undefined }
 
       const FLW_PUBLIC_KEY = import.meta.env.VITE_FLW_PUBLIC_KEY as string | undefined
-      if (!FLW_PUBLIC_KEY) throw new Error('Flutterwave public key not configured')
+      if (!FLW_PUBLIC_KEY) throw new Error('Flutterwave public key not configured — contact support')
 
       const checkout = (window as unknown as {
         FlutterwaveCheckout: (opts: Record<string, unknown>) => { close: () => void }
       }).FlutterwaveCheckout
-      if (typeof checkout !== 'function') throw new Error('Flutterwave SDK not ready')
+      if (typeof checkout !== 'function') throw new Error('Flutterwave checkout SDK not ready')
 
       checkout({
         public_key:      FLW_PUBLIC_KEY,
@@ -220,42 +184,38 @@ export default function BuySheet({
         },
         customizations: {
           title:       '15market',
-          description: `Buy ${usdcAmount} USDC on Arc Testnet`,
+          description: `Buy ${usdcAmount} USDC`,
           logo:        'https://cryptologos.cc/logos/usd-coin-usdc-logo.png',
         },
         callback: (response: { status: string; tx_ref: string; transaction_id?: number }) => {
           if (response.status === 'successful' || response.status === 'completed') {
-            void verifyRef.current(ref, rawUsdc, token, response.transaction_id)
+            void verifyAndDeliver(ref, rawUsdc, token, response.transaction_id)
           } else {
             setErrorMsg(`Payment ${response.status} — please try again`)
             setStep('error')
           }
         },
         onclose: () => {
-          setStep(prev => prev === 'paying' ? 'input' : prev)
+          setStep(prev => (prev === 'paying' ? 'confirm' : prev))
         },
       })
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : 'Something went wrong')
       setStep('error')
     }
-  }, [canPay, walletAddress, parsedNgn, customerEmail, loadFlwSdk, usdcRate])
+  }, [canPay, walletAddress, parsedNgn, customerEmail, loadFlwSdk, usdcRate, verifyAndDeliver])
 
   const handleClose = () => {
-    setStep('input')
-    setNgnOverride(null)
+    setStep('confirm')
     setErrorMsg('')
     setTxHash(undefined)
-    setFinalUsdc('0.00')
-    setFinalNgn(0)
+    setFinalUsdc(lockedUsdcAmount ?? '0.00')
+    setFinalNgn(initialNgn ?? 0)
     onClose()
   }
 
-  const txUrl      = txHash ? buildTxUrl(txHash) : undefined
-  const isLoading  = step === 'paying' || step === 'verifying' || step === 'delivering'
-  const shortWallet = walletAddress
-    ? `${walletAddress.slice(0, 8)}…${walletAddress.slice(-6)}`
-    : '—'
+  const txUrl     = txHash ? buildTxUrl(txHash) : undefined
+  const isLoading = step === 'paying' || step === 'verifying' || step === 'delivering'
 
   return (
     <AnimatePresence>
@@ -273,6 +233,7 @@ export default function BuySheet({
             transition={springs.sheet}
             onClick={e => e.stopPropagation()}
           >
+            {/* Spectral top bar */}
             <div className="h-1" style={{ background: spectral }} />
             <div className="flex justify-center pt-3 pb-1">
               <div className="h-1 w-10 rounded-full" style={{ background: 'var(--divider)' }} />
@@ -282,7 +243,7 @@ export default function BuySheet({
               {/* Header */}
               <div className="mb-5 flex items-center justify-between">
                 <h2 className="text-lg font-bold" style={{ color: 'var(--ink)' }}>
-                  {step === 'done' ? 'Transaction Receipt' : 'Buy USDC'}
+                  {step === 'done' ? 'Transaction Receipt' : 'Confirm Purchase'}
                 </h2>
                 <button
                   onClick={handleClose}
@@ -293,71 +254,43 @@ export default function BuySheet({
                 </button>
               </div>
 
-              {/* ── INPUT / ERROR ── */}
-              {(step === 'input' || step === 'error') && (
-                <div className="space-y-4">
-                  {/* Destination */}
-                  <div className="rounded-2xl px-4 py-3" style={glass.inner}>
-                    <p className="text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--muted)' }}>Sending to</p>
-                    <p className="mono mt-0.5 text-sm font-medium" style={{ color: 'var(--ink)', wordBreak: 'break-all' }}>
-                      {walletAddress ?? '—'}
-                    </p>
-                  </div>
-
-                  {/* NGN input */}
-                  <div>
-                    <label className="mb-1.5 block text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--muted)' }}>
-                      You Pay (Naira)
-                    </label>
-                    <div className="rounded-2xl p-4" style={glass.inner}>
-                      <div className="flex items-baseline gap-2">
-                        <span className="text-2xl font-bold" style={{ color: 'var(--muted)' }}>₦</span>
-                        <input
-                          inputMode="numeric"
-                          value={ngnAmount ? Number(ngnAmount).toLocaleString('en-NG') : ''}
-                          onChange={e => handleNgnInput(e.target.value.replace(/,/g, ''))}
-                          placeholder="0"
-                          className="w-full bg-transparent text-4xl font-bold tabular-nums outline-none placeholder:text-slate-300"
-                          style={{ color: 'var(--ink)' }}
-                        />
-                      </div>
-                      <p className="mt-1 text-xs" style={{ color: 'var(--subtle)' }}>Min ₦500</p>
-                    </div>
-                    <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
-                      {NGN_PRESETS.map(preset => (
-                        <button
-                          key={preset}
-                          onClick={() => setNgnOverride(String(preset))}
-                          className="shrink-0 rounded-full px-3 py-1.5 text-xs font-semibold transition-all hover:scale-105 active:scale-95"
-                          style={ngnAmount === String(preset)
-                            ? { background: 'var(--accent)', color: 'white' }
-                            : glass.pill}
-                        >
-                          ₦{preset.toLocaleString('en-NG')}
-                        </button>
-                      ))}
+              {/* ── CONFIRM — locked quote summary, single Pay CTA ── */}
+              {(step === 'confirm' || step === 'error') && (
+                <div className="space-y-3">
+                  {/* You Pay */}
+                  <div className="rounded-2xl p-4" style={glass.inner}>
+                    <p className="mb-1 text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--muted)' }}>You Pay</p>
+                    <div className="flex items-baseline gap-1.5">
+                      <span className="text-4xl font-bold tabular-nums" style={{ color: 'var(--ink)' }}>
+                        ₦{parsedNgn.toLocaleString('en-NG')}
+                      </span>
+                      <span className="rounded-full px-2 py-0.5 text-xs font-bold" style={{ background: 'var(--accent-dim)', color: 'var(--ngn, #c0392b)' }}>NGN</span>
                     </div>
                   </div>
 
-                  {/* Quote — locked from main page, same rate */}
+                  {/* You Receive */}
                   <div className="rounded-2xl p-4" style={{ background: 'var(--accent-dim)', border: '1px solid rgba(82,179,110,0.22)' }}>
+                    <p className="mb-1 text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--muted)' }}>You Receive</p>
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--muted)' }}>
-                        You Receive
-                      </span>
-                      <span className="text-xs" style={{ color: 'var(--subtle)' }}>
-                        ₦{usdcRate.toLocaleString('en-NG')} / USDC · 1.5% fee
-                      </span>
-                    </div>
-                    <div className="mt-2 flex items-center justify-between">
                       <div className="flex items-baseline gap-1.5">
-                        <span className="text-3xl font-bold tabular-nums" style={{ color: 'var(--success)' }}>
-                          {estimatedUsdc}
+                        <span className="text-4xl font-bold tabular-nums" style={{ color: 'var(--success)' }}>
+                          {displayUsdc}
                         </span>
                         <span className="text-base font-semibold" style={{ color: 'var(--muted)' }}>USDC</span>
                       </div>
-                      <TokenUSDC variant="branded" size={24} />
+                      <TokenUSDC variant="branded" size={28} />
                     </div>
+                    <p className="mt-1 text-xs" style={{ color: 'var(--subtle)' }}>
+                      Rate ₦{usdcRate.toLocaleString('en-NG')} · 1.5% fee · Arc Testnet
+                    </p>
+                  </div>
+
+                  {/* Destination wallet */}
+                  <div className="rounded-2xl px-4 py-3" style={glass.inner}>
+                    <p className="text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--muted)' }}>Destination Wallet</p>
+                    <p className="mono mt-0.5 break-all text-xs font-medium" style={{ color: 'var(--ink)' }}>
+                      {walletAddress ?? '—'}
+                    </p>
                   </div>
 
                   {/* Error banner */}
@@ -368,22 +301,23 @@ export default function BuySheet({
                     </div>
                   )}
 
-                  {/* CTA */}
+                  {/* Pay CTA */}
                   <button
                     disabled={!canPay || isLoading}
                     onClick={() => { void handleFlutterwave() }}
-                    className="flex w-full items-center justify-center gap-1 rounded-2xl py-4 text-sm font-bold text-white transition-all hover:scale-[1.01] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
+                    className="flex w-full items-center justify-center gap-2 rounded-2xl py-4 text-sm font-bold text-white transition-all hover:scale-[1.01] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
                     style={{ background: 'var(--accent)' }}
                   >
-                    {!isValidAmount
-                      ? 'Enter an amount above'
-                      : `Pay ₦${parsedNgn.toLocaleString('en-NG')} via Flutterwave`}
-                    {canPay && <ChevronRight className="size-4" />}
+                    {isLoading
+                      ? <><Loader2 className="size-4 animate-spin" /> Processing…</>
+                      : <>Pay ₦{parsedNgn.toLocaleString('en-NG')} via Flutterwave</>
+                    }
                   </button>
 
-                  <p className="text-center text-xs" style={{ color: 'var(--subtle)' }}>
+                  <div className="flex items-center justify-center gap-1.5 text-xs" style={{ color: 'var(--subtle)' }}>
+                    <ShieldCheck className="size-3.5" style={{ color: 'var(--success)' }} />
                     Secured by Flutterwave · fifteen
-                  </p>
+                  </div>
                 </div>
               )}
 
@@ -406,7 +340,7 @@ export default function BuySheet({
                     <Loader2 className="size-8 animate-spin" style={{ color: '#6366f1' }} />
                   </div>
                   <p className="font-bold" style={{ color: 'var(--ink)' }}>Confirming Payment…</p>
-                  <p className="text-sm" style={{ color: 'var(--muted)' }}>Checking with Flutterwave — this can take up to 60 seconds</p>
+                  <p className="text-sm" style={{ color: 'var(--muted)' }}>Checking with Flutterwave — this takes a few seconds</p>
                   {txRef && <p className="mono text-xs" style={{ color: 'var(--subtle)' }}>Ref: {txRef}</p>}
                 </div>
               )}
@@ -431,7 +365,6 @@ export default function BuySheet({
                   txRef={txRef}
                   txHash={txHash}
                   txUrl={txUrl}
-                  shortWallet={shortWallet}
                   walletAddress={walletAddress}
                   onClose={handleClose}
                 />
@@ -444,12 +377,12 @@ export default function BuySheet({
   )
 }
 
-// ── Receipt component ─────────────────────────────────────────────────────────
+// ── Receipt ───────────────────────────────────────────────────────────────────
 function ReceiptRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
     <div className="flex items-center justify-between py-2.5" style={{ borderBottom: '1px solid var(--divider)' }}>
       <span className="text-xs" style={{ color: 'var(--muted)' }}>{label}</span>
-      <span className={`text-xs font-semibold ${mono ? 'font-mono' : ''}`} style={{ color: 'var(--ink)' }}>{value}</span>
+      <span className={`text-xs font-semibold${mono ? ' font-mono' : ''}`} style={{ color: 'var(--ink)' }}>{value}</span>
     </div>
   )
 }
@@ -461,17 +394,13 @@ interface ReceiptProps {
   txRef:         string
   txHash?:       string
   txUrl?:        string
-  shortWallet:   string
   walletAddress: `0x${string}` | undefined
   onClose:       () => void
 }
 
-function ReceiptView({ finalUsdc, finalNgn, lockedRate, txRef, txHash, txUrl, shortWallet, walletAddress, onClose }: ReceiptProps) {
-  const { copied: refCopied, copy: copyRef } = useCopy(txRef)
+function ReceiptView({ finalUsdc, finalNgn, lockedRate, txRef, txHash, txUrl, walletAddress, onClose }: ReceiptProps) {
+  const { copied: refCopied,  copy: copyRef  } = useCopy(txRef)
   const { copied: hashCopied, copy: copyHash } = useCopy(txHash ?? '')
-
-  // Unused var required so ARC_TESTNET_CHAIN_ID doesn't trip lint
-  void ARC_TESTNET_CHAIN_ID
 
   return (
     <motion.div
@@ -490,16 +419,15 @@ function ReceiptView({ finalUsdc, finalNgn, lockedRate, txRef, txHash, txUrl, sh
           <span className="text-3xl font-bold tabular-nums" style={{ color: 'var(--success)' }}>{finalUsdc}</span>
           <span className="text-base font-semibold" style={{ color: 'var(--muted)' }}>USDC</span>
         </div>
-        <p className="text-xs" style={{ color: 'var(--subtle)' }}>sent to {shortWallet}</p>
       </div>
 
       {/* Receipt card */}
-      <div className="rounded-2xl px-4 py-1" style={glass.inner}>
-        <ReceiptRow label="You Paid" value={`₦${finalNgn.toLocaleString('en-NG')}`} />
+      <div className="rounded-2xl px-4 py-1" style={{ background: 'var(--glass-soft-bg)', border: '1px solid var(--glass-soft-border)' }}>
+        <ReceiptRow label="You Paid"     value={`₦${finalNgn.toLocaleString('en-NG')}`} />
         <ReceiptRow label="You Received" value={`${finalUsdc} USDC`} />
-        <ReceiptRow label="Rate Used" value={`₦${lockedRate.toLocaleString('en-NG')} / USDC`} />
+        <ReceiptRow label="Rate Used"    value={`₦${lockedRate.toLocaleString('en-NG')} / USDC`} />
         <ReceiptRow label="Platform Fee" value="1.5%" />
-        <ReceiptRow label="Network" value="Arc Testnet" />
+        <ReceiptRow label="Network"      value="Arc Testnet" />
         <ReceiptRow
           label="Destination"
           value={walletAddress ? `${walletAddress.slice(0,10)}…${walletAddress.slice(-6)}` : '—'}
@@ -507,11 +435,7 @@ function ReceiptView({ finalUsdc, finalNgn, lockedRate, txRef, txHash, txUrl, sh
         />
         <div className="flex items-center justify-between py-2.5">
           <span className="text-xs" style={{ color: 'var(--muted)' }}>Transaction Ref</span>
-          <button
-            onClick={copyRef}
-            className="flex items-center gap-1 text-xs font-semibold"
-            style={{ color: 'var(--accent)' }}
-          >
+          <button onClick={copyRef} className="flex items-center gap-1 text-xs font-semibold" style={{ color: 'var(--accent)' }}>
             <span className="font-mono">{txRef.length > 20 ? txRef.slice(-16) : txRef}</span>
             {refCopied ? <Check className="size-3" /> : <Copy className="size-3" />}
           </button>
@@ -519,24 +443,16 @@ function ReceiptView({ finalUsdc, finalNgn, lockedRate, txRef, txHash, txUrl, sh
         {txHash && (
           <div className="flex items-center justify-between py-2.5">
             <span className="text-xs" style={{ color: 'var(--muted)' }}>On-chain Tx</span>
-            <button
-              onClick={copyHash}
-              className="flex items-center gap-1 text-xs font-semibold"
-              style={{ color: 'var(--accent)' }}
-            >
-              <span className="font-mono">{txHash.slice(0, 8)}…{txHash.slice(-6)}</span>
+            <button onClick={copyHash} className="flex items-center gap-1 text-xs font-semibold" style={{ color: 'var(--accent)' }}>
+              <span className="font-mono">{txHash.slice(0,8)}…{txHash.slice(-6)}</span>
               {hashCopied ? <Check className="size-3" /> : <Copy className="size-3" />}
             </button>
           </div>
         )}
       </div>
 
-      {/* Explorer link */}
       {txUrl && (
-        <a
-          href={txUrl}
-          target="_blank"
-          rel="noreferrer"
+        <a href={txUrl} target="_blank" rel="noreferrer"
           className="flex w-full items-center justify-center gap-1.5 rounded-xl py-2.5 text-xs font-semibold hover:opacity-80"
           style={{ background: 'var(--accent-dim)', color: 'var(--accent)' }}
         >

@@ -355,14 +355,18 @@ export default function App() {
         </main>
       </div>
 
-      <BuySheet
-        open={buyOpen}
-        onClose={() => setBuyOpen(false)}
-        usdcRate={usdcRate}
-        walletAddress={walletAddress}
-        ngnAmount={parsedNgn}
-        lockedUsdcAmount={usdcOut > 0 ? usdcOut.toFixed(2) : undefined}
-      />
+      {/* key remounts BuySheet fresh on each open so internal state always resets cleanly */}
+      {buyOpen && (
+        <BuySheet
+          key={`buy-${parsedNgn}-${walletAddress}`}
+          open={buyOpen}
+          onClose={() => setBuyOpen(false)}
+          usdcRate={usdcRate}
+          walletAddress={walletAddress}
+          ngnAmount={parsedNgn}
+          lockedUsdcAmount={usdcOut > 0 ? usdcOut.toFixed(2) : undefined}
+        />
+      )}
     </div>
   )
 }

@@ -827,6 +827,23 @@ app.get('/admin/stats', async (c) => {
   return c.json({ data })
 })
 
+// GET /api/balance/:address — proxy balanceOf through the server
+// (avoids any browser-side CORS / network restrictions reaching Arc RPC directly)
+app.get('/api/balance/:address', async (c) => {
+  const addr = c.req.param('address')
+  if (!/^0x[0-9a-fA-F]{40}$/i.test(addr)) return c.json({ error: 'Invalid address' }, 400)
+  try {
+    const pc = createPublicClient({ chain: arcViemChain, transport: http(ARC_CHAIN_DEF.rpcUrls[0]) })
+    const raw = await pc.readContract({
+      address: USDC_ADDRESS, abi: erc20Abi, functionName: 'balanceOf', args: [addr as `0x${string}`],
+    }) as bigint
+    return c.json({ balance: (Number(raw) / 10 ** USDC_DECIMALS).toFixed(2) })
+  } catch (err) {
+    console.warn('[balance] lookup failed:', err)
+    return c.json({ balance: '0.00' })
+  }
+})
+
 // GET /treasury/status — ops health check
 app.get('/treasury/status', async (c) => {
   const clients = getTreasuryClients()
