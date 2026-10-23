@@ -44,17 +44,24 @@ export interface LogRecord {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Upsert a transaction row. Silent on error so a DB outage never blocks payments. */
+/** Upsert a transaction row. Logs full error details — never blocks payments. */
 export async function upsertTransaction(rec: TxRecord): Promise<void> {
-  if (!url || !secret) return
+  if (!url || !secret) {
+    console.warn('[supabase] upsertTransaction skipped — credentials missing')
+    return
+  }
   const { error } = await db.from('transactions').upsert(
     { ...rec, updated_at: new Date().toISOString() },
     { onConflict: 'tx_ref' },
   )
-  if (error) console.error('[supabase] upsert tx error:', error.message)
+  if (error) {
+    console.error('[supabase] upsert tx error:', error.message, '| code:', error.code, '| hint:', error.hint ?? '', '| details:', error.details ?? '')
+  } else {
+    console.log(`[supabase] upserted tx ${rec.tx_ref} status=${rec.status}`)
+  }
 }
 
-/** Append a log line to transaction_logs. Silent on error. */
+/** Append a log line to transaction_logs. Logs full error details. */
 export async function appendLog(rec: LogRecord): Promise<void> {
   if (!url || !secret) return
   const { error } = await db.from('transaction_logs').insert({
@@ -63,7 +70,9 @@ export async function appendLog(rec: LogRecord): Promise<void> {
     message: rec.message,
     meta:    rec.meta ?? null,
   })
-  if (error) console.error('[supabase] insert log error:', error.message)
+  if (error) {
+    console.error('[supabase] insert log error:', error.message, '| code:', error.code, '| hint:', error.hint ?? '')
+  }
 }
 
 /** Update just the status (+ optional fields) of a transaction. */
@@ -77,5 +86,9 @@ export async function updateTxStatus(
     .from('transactions')
     .update({ status, ...extra, updated_at: new Date().toISOString() })
     .eq('tx_ref', tx_ref)
-  if (error) console.error('[supabase] update status error:', error.message)
+  if (error) {
+    console.error('[supabase] update status error:', error.message, '| code:', error.code, '| hint:', error.hint ?? '')
+  } else {
+    console.log(`[supabase] updated tx ${tx_ref} → ${status}`)
+  }
 }
