@@ -29,7 +29,7 @@ import { cors } from 'hono/cors'
 import { createHash, createHmac, randomBytes } from 'node:crypto'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { upsertTransaction, updateTxStatus, appendLog } from './supabase.js'
+import { upsertTransaction, updateTxStatus, appendLog, loadActiveOrders } from './supabase.js'
 import { emit, addClient } from './sse.js'
 import {
   createWalletClient,
@@ -215,13 +215,42 @@ function saveOrders(map: Map<string, Order>): void {
   }
 }
 
-const pendingOrders = loadOrders()
-console.log(`[orders] loaded ${pendingOrders.size} order(s) from disk`)
+// Primary store — populated at startup from Supabase, then kept in sync
+const pendingOrders: Map<string, Order> = new Map()
 
-// Rebuild the flwTxId index from persisted orders so replay protection
-// survives a server restart.
-for (const [tx_ref, order] of pendingOrders) {
-  if (order.flwTxId) usedFlwTxIds.set(order.flwTxId, tx_ref)
+async function hydrateOrdersFromDb(): Promise<void> {
+  // Load from Supabase first (survives restarts)
+  const dbOrders = await loadActiveOrders()
+  for (const [tx_ref, rec] of dbOrders) {
+    const order: Order = {
+      walletAddress: rec.wallet_address,
+      usdcAmount:    String(rec.usdc_amount),
+      ngnAmount:     rec.ngn_amount,
+      flwTxId:       rec.flw_tx_id ?? undefined,
+      txHash:        rec.tx_hash   ?? undefined,
+      accessToken:   rec.access_token ?? '',
+      status:        rec.status as OrderStatus,
+      createdAt:     Date.now(), // approximate — we don't need exact time for in-memory
+      country:       rec.country ?? undefined,
+      lat:           rec.lat     ?? undefined,
+      lng:           rec.lng     ?? undefined,
+    }
+    pendingOrders.set(tx_ref, order)
+    if (order.flwTxId) usedFlwTxIds.set(order.flwTxId, tx_ref)
+  }
+
+  // Merge disk file — catches any orders written locally before Supabase was set up
+  const diskOrders = loadOrders()
+  let diskMerged = 0
+  for (const [tx_ref, order] of diskOrders) {
+    if (!pendingOrders.has(tx_ref)) {
+      pendingOrders.set(tx_ref, order)
+      if (order.flwTxId) usedFlwTxIds.set(order.flwTxId, tx_ref)
+      diskMerged++
+    }
+  }
+  if (diskMerged > 0) console.log(`[orders] merged ${diskMerged} disk-only order(s) into memory`)
+  console.log(`[orders] ${pendingOrders.size} order(s) ready`)
 }
 
 // ─── Rate limiter (sliding window, per-IP) ────────────────────────────────────
@@ -472,7 +501,7 @@ app.post('/api/flw/initialize', async (c) => {
   const ipHash = createHash('sha256').update(ip).digest('hex').slice(0, 16)
   const geo    = await geoipLookup(ip)
 
-  pendingOrders.set(tx_ref, {
+  const newOrder: Order = {
     walletAddress,
     usdcAmount,
     ngnAmount:   amount,
@@ -482,13 +511,15 @@ app.post('/api/flw/initialize', async (c) => {
     country:     geo.country,
     lat:         geo.lat,
     lng:         geo.lng,
-  })
+  }
+  pendingOrders.set(tx_ref, newOrder)
   saveOrders(pendingOrders)
 
-  void upsertTransaction({
+  // Await the DB write — if Supabase is down, the order is still in memory + disk
+  await upsertTransaction({
     tx_ref, wallet_address: walletAddress, ngn_amount: amount,
     usdc_amount: parseFloat(usdcAmount), fee_bps: PLATFORM_FEE_BPS,
-    rate, status: 'pending', ip_hash: ipHash,
+    rate, status: 'pending', ip_hash: ipHash, access_token: accessToken,
     country: geo.country, lat: geo.lat, lng: geo.lng,
   })
 
@@ -581,7 +612,7 @@ app.get('/api/flw/verify/:tx_ref', async (c) => {
         log('info', tx_ref, `Flutterwave payment confirmed (fast-path)`, { flwTxId })
       } else if (result.data?.status === 'failed') {
         log('error', tx_ref, 'Flutterwave reports payment failed', { flwTxId })
-        void updateTxStatus(tx_ref, 'failed')
+        await updateTxStatus(tx_ref, 'failed')
         return c.json({ success: false, status: 'FAILED' })
       }
     } catch (err) {
@@ -606,7 +637,7 @@ app.get('/api/flw/verify/:tx_ref', async (c) => {
         }
         if (match?.status === 'failed') {
           log('error', tx_ref, 'Flutterwave reports payment failed (poll)')
-          void updateTxStatus(tx_ref, 'failed')
+          await updateTxStatus(tx_ref, 'failed')
           return c.json({ success: false, status: 'FAILED' })
         }
         log('debug', tx_ref, `Poll attempt ${attempt}/${MAX_ATTEMPTS} — status: ${match?.status ?? 'none'}`)
@@ -630,23 +661,23 @@ app.get('/api/flw/verify/:tx_ref', async (c) => {
   // ── Atomic checks ──────────────────────────────────────────────────────────
   if (foundTx.currency !== 'NGN') {
     log('error', tx_ref, `Currency mismatch — expected NGN got ${foundTx.currency}`)
-    void updateTxStatus(tx_ref, 'failed')
+    await updateTxStatus(tx_ref, 'failed')
     return c.json({ success: false, status: 'CURRENCY_MISMATCH' })
   }
   if (foundTx.charged_amount < order.ngnAmount) {
     log('error', tx_ref, `Amount mismatch — expected ₦${order.ngnAmount} got ₦${foundTx.charged_amount}`)
-    void updateTxStatus(tx_ref, 'failed')
+    await updateTxStatus(tx_ref, 'failed')
     return c.json({ success: false, status: 'AMOUNT_MISMATCH' })
   }
   if (foundTx.tx_ref !== tx_ref) {
     log('error', tx_ref, 'tx_ref mismatch — possible reference substitution attack')
-    void updateTxStatus(tx_ref, 'failed')
+    await updateTxStatus(tx_ref, 'failed')
     return c.json({ success: false, status: 'REF_MISMATCH' })
   }
 
   pendingOrders.set(tx_ref, { ...order, status: 'verified', flwTxId: foundTx.id })
   saveOrders(pendingOrders)
-  void updateTxStatus(tx_ref, 'verified', { flw_tx_id: foundTx.id })
+  await updateTxStatus(tx_ref, 'verified', { flw_tx_id: foundTx.id })
   log('info', tx_ref, `Payment verified — ₦${order.ngnAmount} confirmed by Flutterwave`, { flwTxId: foundTx.id })
   emit({ type: 'tx_update', tx_ref, status: 'verified', ts: Date.now() })
 
@@ -700,7 +731,7 @@ app.post('/api/flw/deliver', async (c) => {
   // ── Atomic lock ──
   pendingOrders.set(tx_ref, { ...order, status: 'delivering' })
   saveOrders(pendingOrders)
-  void updateTxStatus(tx_ref, 'delivering')
+  await updateTxStatus(tx_ref, 'delivering')
   log('info', tx_ref, `Initiating USDC delivery — ${order.usdcAmount} USDC → ${walletAddress}`)
   emit({ type: 'tx_update', tx_ref, status: 'delivering', ts: Date.now() })
 
@@ -708,7 +739,7 @@ app.post('/api/flw/deliver', async (c) => {
   if (!clients) {
     pendingOrders.set(tx_ref, { ...order, status: 'verified' })
     saveOrders(pendingOrders)
-    void updateTxStatus(tx_ref, 'verified')
+    await updateTxStatus(tx_ref, 'verified')
     log('error', tx_ref, 'TREASURY_PRIVATE_KEY missing — rolled back to verified')
     return c.json({ error: 'Treasury wallet not configured. Set TREASURY_PRIVATE_KEY in .env.' }, 500)
   }
@@ -730,13 +761,13 @@ app.post('/api/flw/deliver', async (c) => {
     log('error', tx_ref, `On-chain transfer failed: ${msg}`)
     pendingOrders.set(tx_ref, { ...order, status: 'verified' })
     saveOrders(pendingOrders)
-    void updateTxStatus(tx_ref, 'verified')
+    await updateTxStatus(tx_ref, 'verified')
     return c.json({ error: `On-chain transfer failed: ${msg}` }, 500)
   }
 
   pendingOrders.set(tx_ref, { ...order, status: 'delivered', txHash })
   saveOrders(pendingOrders)
-  void updateTxStatus(tx_ref, 'delivered', { tx_hash: txHash })
+  await updateTxStatus(tx_ref, 'delivered', { tx_hash: txHash })
   log('info', tx_ref, `USDC delivered successfully`, { txHash, usdcAmount: order.usdcAmount, walletAddress })
   emit({ type: 'tx_update', tx_ref, status: 'delivered', txHash, ts: Date.now() })
 
@@ -813,7 +844,7 @@ app.post('/api/admin/retry/:tx_ref', async (c) => {
     if (order.status !== 'verified') {
       pendingOrders.set(tx_ref, { ...order, status: 'verified' })
       saveOrders(pendingOrders)
-      void updateTxStatus(tx_ref, 'verified')
+      await updateTxStatus(tx_ref, 'verified')
       log('info', tx_ref, `Admin manually reset order to verified for retry`, { from: order.status })
     }
     // Attempt delivery inline
@@ -823,7 +854,7 @@ app.post('/api/admin/retry/:tx_ref', async (c) => {
     const updatedOrder = pendingOrders.get(tx_ref)!
     pendingOrders.set(tx_ref, { ...updatedOrder, status: 'delivering' })
     saveOrders(pendingOrders)
-    void updateTxStatus(tx_ref, 'delivering')
+    await updateTxStatus(tx_ref, 'delivering')
     log('info', tx_ref, 'Admin-triggered retry delivery initiated')
 
     const { walletClient } = clients
@@ -835,7 +866,7 @@ app.post('/api/admin/retry/:tx_ref', async (c) => {
       })
       pendingOrders.set(tx_ref, { ...updatedOrder, status: 'delivered', txHash })
       saveOrders(pendingOrders)
-      void updateTxStatus(tx_ref, 'delivered', { tx_hash: txHash })
+      await updateTxStatus(tx_ref, 'delivered', { tx_hash: txHash })
       log('info', tx_ref, `Admin retry succeeded`, { txHash })
       emit({ type: 'tx_update', tx_ref, status: 'delivered', txHash, ts: Date.now() })
       return c.json({ success: true, txHash })
@@ -843,7 +874,7 @@ app.post('/api/admin/retry/:tx_ref', async (c) => {
       const msg = err instanceof Error ? err.message : String(err)
       pendingOrders.set(tx_ref, { ...updatedOrder, status: 'verified' })
       saveOrders(pendingOrders)
-      void updateTxStatus(tx_ref, 'verified')
+      await updateTxStatus(tx_ref, 'verified')
       log('error', tx_ref, `Admin retry failed: ${msg}`)
       return c.json({ error: msg }, 500)
     }
@@ -1195,7 +1226,7 @@ async function deliverOrder(tx_ref: string, order: Order): Promise<string> {
   // Atomic lock
   pendingOrders.set(tx_ref, { ...order, status: 'delivering' })
   saveOrders(pendingOrders)
-  void updateTxStatus(tx_ref, 'delivering')
+  await updateTxStatus(tx_ref, 'delivering')
   log('info', tx_ref, `[queue] Initiating USDC delivery — ${order.usdcAmount} USDC → ${order.walletAddress}`)
   emit({ type: 'tx_update', tx_ref, status: 'delivering', ts: Date.now() })
 
@@ -1209,7 +1240,7 @@ async function deliverOrder(tx_ref: string, order: Order): Promise<string> {
 
   pendingOrders.set(tx_ref, { ...order, status: 'delivered', txHash })
   saveOrders(pendingOrders)
-  void updateTxStatus(tx_ref, 'delivered', { tx_hash: txHash })
+  await updateTxStatus(tx_ref, 'delivered', { tx_hash: txHash })
   log('info', tx_ref, `[queue] USDC delivered`, { txHash, usdcAmount: order.usdcAmount })
   emit({ type: 'tx_update', tx_ref, status: 'delivered', txHash, ts: Date.now() })
   return txHash
@@ -1221,6 +1252,32 @@ async function deliverOrder(tx_ref: string, order: Order): Promise<string> {
  */
 function startQueueFiller() {
   setInterval(async () => {
+    // Sync any verified orders from Supabase that aren't in memory yet
+    // (e.g. written by a previous server instance before restart)
+    const { db: qdb } = await import('./supabase.js')
+    const { data: dbVerified } = await qdb
+      .from('transactions')
+      .select('*')
+      .in('status', ['verified', 'delivering'])
+      .order('created_at', { ascending: true })
+
+    for (const row of (dbVerified ?? [])) {
+      const r = row as { tx_ref: string; wallet_address: string; usdc_amount: number; ngn_amount: number; flw_tx_id?: number; tx_hash?: string; access_token?: string; status: string }
+      if (!pendingOrders.has(r.tx_ref)) {
+        pendingOrders.set(r.tx_ref, {
+          walletAddress: r.wallet_address,
+          usdcAmount:    String(r.usdc_amount),
+          ngnAmount:     r.ngn_amount,
+          flwTxId:       r.flw_tx_id ?? undefined,
+          txHash:        r.tx_hash ?? undefined,
+          accessToken:   r.access_token ?? '',
+          status:        r.status as OrderStatus,
+          createdAt:     Date.now(),
+        })
+        console.log(`[queue] synced verified order from DB: ${r.tx_ref}`)
+      }
+    }
+
     const verified = [...pendingOrders.entries()]
       .filter(([, o]) => o.status === 'verified')
       .sort((a, b) => parseFloat(a[1].usdcAmount) - parseFloat(b[1].usdcAmount)) // smallest first = fill more orders
@@ -1246,7 +1303,7 @@ function startQueueFiller() {
         // Roll back to verified so it will be retried next cycle
         pendingOrders.set(tx_ref, { ...order, status: 'verified' })
         saveOrders(pendingOrders)
-        void updateTxStatus(tx_ref, 'verified')
+        await updateTxStatus(tx_ref, 'verified')
       }
     }
   }, 30_000)
@@ -1256,6 +1313,10 @@ function startQueueFiller() {
 // ─── Start ────────────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3001
+
+// Hydrate in-memory order store from Supabase before accepting requests
+await hydrateOrdersFromDb()
+
 serve({ fetch: app.fetch, port: PORT }, () => {
   console.log(`fifteen server running on http://localhost:${PORT}`)
   const clients = getTreasuryClients()

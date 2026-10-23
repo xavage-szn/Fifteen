@@ -30,6 +30,7 @@ export interface TxRecord {
   fee_bps:        number
   rate:           number
   status:         'pending' | 'verified' | 'delivering' | 'delivered' | 'failed'
+  access_token?:  string | null
   flw_tx_id?:     number | null
   tx_hash?:       string | null
   ip_hash?:       string | null
@@ -76,6 +77,31 @@ export async function appendLog(rec: LogRecord): Promise<void> {
   if (error) {
     console.error('[supabase] insert log error:', error.message, '| code:', error.code, '| hint:', error.hint ?? '')
   }
+}
+
+/**
+ * Load all non-final orders from Supabase into a Map so the server can
+ * resume in-flight orders after a restart without losing anything.
+ * Returns an empty Map if Supabase credentials are absent.
+ */
+export async function loadActiveOrders(): Promise<Map<string, TxRecord>> {
+  if (!url || !secret) return new Map()
+  const { data, error } = await db
+    .from('transactions')
+    .select('*')
+    .in('status', ['pending', 'verified', 'delivering'])
+    .order('created_at', { ascending: true })
+  if (error) {
+    console.error('[supabase] loadActiveOrders error:', error.message)
+    return new Map()
+  }
+  const map = new Map<string, TxRecord>()
+  for (const row of (data ?? [])) {
+    const r = row as TxRecord & { access_token?: string }
+    map.set(r.tx_ref, r)
+  }
+  console.log(`[supabase] loaded ${map.size} active order(s) from database`)
+  return map
 }
 
 /** Update just the status (+ optional fields) of a transaction. */
