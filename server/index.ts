@@ -869,6 +869,52 @@ app.get('/api/balance/:address', async (c) => {
   }
 })
 
+// GET /admin/disk-orders — all orders from disk (no Supabase needed)
+app.get('/api/admin/disk-orders', (c) => {
+  const authHeader = c.req.header('authorization') ?? ''
+  if (!authHeader.startsWith('Bearer ') || authHeader.length < 20)
+    return c.json({ error: 'Unauthorized' }, 401)
+
+  const entries = [...pendingOrders.entries()].map(([tx_ref, o]) => ({ tx_ref, ...o }))
+  entries.sort((a, b) => b.createdAt - a.createdAt)
+  return c.json({ data: entries, total: entries.length })
+})
+
+// POST /admin/backfill — upsert all disk orders into Supabase
+app.post('/api/admin/backfill', async (c) => {
+  const authHeader = c.req.header('authorization') ?? ''
+  if (!authHeader.startsWith('Bearer ') || authHeader.length < 20)
+    return c.json({ error: 'Unauthorized' }, 401)
+
+  const entries = [...pendingOrders.entries()]
+  if (entries.length === 0) return c.json({ upserted: 0 })
+
+  let upserted = 0
+  let failed   = 0
+  for (const [tx_ref, o] of entries) {
+    try {
+      await upsertTransaction({
+        tx_ref,
+        wallet_address: o.walletAddress,
+        ngn_amount:     o.ngnAmount,
+        usdc_amount:    parseFloat(o.usdcAmount),
+        fee_bps:        PLATFORM_FEE_BPS,
+        rate:           0,   // rate not stored on disk; placeholder
+        status:         o.status as 'pending' | 'verified' | 'delivering' | 'delivered' | 'failed',
+        flw_tx_id:      o.flwTxId ?? null,
+        tx_hash:        o.txHash  ?? null,
+      })
+      log('info', tx_ref, '[backfill] upserted into Supabase')
+      upserted++
+    } catch (err) {
+      failed++
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error(`[backfill] failed for ${tx_ref}: ${msg}`)
+    }
+  }
+  return c.json({ upserted, failed, total: entries.length })
+})
+
 // GET /treasury/status — ops health check
 app.get('/api/treasury/status', async (c) => {
   const clients = getTreasuryClients()

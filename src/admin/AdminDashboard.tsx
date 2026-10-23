@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
-  BarChart2, RefreshCw, AlertTriangle, Activity,
+  BarChart2, RefreshCw, AlertTriangle, Activity, HardDrive,
   LogOut, CheckCircle2, XCircle, Clock, Loader2,
   ChevronRight, ChevronLeft, ExternalLink, RotateCcw,
 } from 'lucide-react'
@@ -86,7 +86,18 @@ function shortRef(ref: string) {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-type Tab = 'transactions' | 'analytics' | 'disputes' | 'live'
+interface DiskOrder {
+  tx_ref:        string
+  walletAddress: string
+  usdcAmount:    string
+  ngnAmount:     number
+  flwTxId?:      number
+  txHash?:       string
+  status:        string
+  createdAt:     number
+}
+
+type Tab = 'transactions' | 'analytics' | 'disputes' | 'live' | 'disk'
 
 export default function AdminDashboard({ token, onSignOut }: { token: string; onSignOut: () => void }) {
   const [tab,          setTab]          = useState<Tab>('transactions')
@@ -99,6 +110,9 @@ export default function AdminDashboard({ token, onSignOut }: { token: string; on
   const [logs,         setLogs]         = useState<LogRow[]>([])
   const [selectedTx,   setSelectedTx]   = useState<TxRow | null>(null)
   const [retrying,     setRetrying]     = useState<string | null>(null)
+  const [diskOrders,   setDiskOrders]   = useState<DiskOrder[]>([])
+  const [backfilling,  setBackfilling]  = useState(false)
+  const [backfillMsg,  setBackfillMsg]  = useState<string | null>(null)
   const [liveLog,      setLiveLog]      = useState<LiveLogEntry[]>([])
   const [liveConnected,setLiveConnected]= useState(false)
   const [loading,      setLoading]      = useState(false)
@@ -144,6 +158,25 @@ export default function AdminDashboard({ token, onSignOut }: { token: string; on
     })
     if (res.ok) { const json = await res.json() as { data: LogRow[] }; setLogs(json.data ?? []) }
   }, [token])
+
+  // ── Fetch disk-backed orders ───────────────────────────────────────────────
+  const fetchDiskOrders = useCallback(async () => {
+    const res = await fetch('/api/admin/disk-orders', { headers: { Authorization: `Bearer ${token}` } })
+    if (res.ok) { const json = await res.json() as { data: DiskOrder[] }; setDiskOrders(json.data ?? []) }
+  }, [token])
+
+  // ── Backfill disk orders → Supabase ────────────────────────────────────────
+  async function runBackfill() {
+    setBackfilling(true)
+    setBackfillMsg(null)
+    const res  = await fetch('/api/admin/backfill', { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
+    const json = await res.json() as { upserted?: number; failed?: number; total?: number; error?: string }
+    setBackfilling(false)
+    if (json.error) { setBackfillMsg(`Error: ${json.error}`); return }
+    setBackfillMsg(`Done — ${json.upserted ?? 0} upserted, ${json.failed ?? 0} failed (${json.total ?? 0} total on disk)`)
+    void fetchTx()
+    void fetchStats()
+  }
 
   // ── Retry delivery ─────────────────────────────────────────────────────────
   async function retryTx(tx_ref: string) {
@@ -212,6 +245,7 @@ export default function AdminDashboard({ token, onSignOut }: { token: string; on
       if (tab === 'transactions') await fetchTx()
       if (tab === 'analytics')    await fetchStats()
       if (tab === 'disputes')     { await fetchDisputes(); await fetchStats() }
+      if (tab === 'disk')         await fetchDiskOrders()
     }
     void run()
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -280,6 +314,7 @@ export default function AdminDashboard({ token, onSignOut }: { token: string; on
           ['transactions', <BarChart2 key="b" className="size-3.5" />,  'Transactions'],
           ['analytics',    <Activity  key="a" className="size-3.5" />,  'Analytics'],
           ['disputes',     <AlertTriangle key="d" className="size-3.5" />, 'Disputes'],
+          ['disk',         <HardDrive key="k" className="size-3.5" />, 'Disk Orders'],
           ['live',         <RefreshCw key="l" className="size-3.5 animate-spin" style={{ animationDuration: '3s' }} />, 'Live Logs'],
         ] as [Tab, React.ReactNode, string][]).map(([id, icon, label]) => (
           <button
@@ -587,6 +622,112 @@ export default function AdminDashboard({ token, onSignOut }: { token: string; on
                 )}
               </div>
             ))}
+          </div>
+        )}
+
+        {/* ── DISK ORDERS TAB ──────────────────────────────────────────── */}
+        {tab === 'disk' && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-semibold" style={{ color: 'var(--ink)' }}>
+                  Orders on disk ({diskOrders.length})
+                </p>
+                <p className="text-xs" style={{ color: 'var(--muted)' }}>
+                  All orders loaded in server memory from .orders/orders.json
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={() => void fetchDiskOrders()} className="rounded-xl p-2" style={soft}>
+                  <RefreshCw className="size-4" style={{ color: 'var(--muted)' }} />
+                </button>
+              </div>
+            </div>
+
+            {/* Backfill banner */}
+            <div className="rounded-2xl p-4" style={glass}>
+              <p className="mb-1 text-xs font-semibold" style={{ color: 'var(--ink)' }}>
+                Sync to database
+              </p>
+              <p className="mb-3 text-xs" style={{ color: 'var(--muted)' }}>
+                Upsert all disk orders into Supabase so they appear in Transactions and Analytics.
+                Safe to run multiple times — existing rows are updated, not duplicated.
+              </p>
+              {backfillMsg && (
+                <p className="mb-2 text-xs font-semibold" style={{ color: 'var(--success)' }}>{backfillMsg}</p>
+              )}
+              <button
+                onClick={() => void runBackfill()}
+                disabled={backfilling || diskOrders.length === 0}
+                className="flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold text-white disabled:opacity-40"
+                style={{ background: 'var(--accent)' }}
+              >
+                {backfilling ? <Loader2 className="size-3.5 animate-spin" /> : <HardDrive className="size-3.5" />}
+                {backfilling ? 'Syncing…' : `Sync ${diskOrders.length} orders to Supabase`}
+              </button>
+            </div>
+
+            {diskOrders.length === 0 && (
+              <div className="rounded-2xl p-8 text-center" style={glass}>
+                <CheckCircle2 className="mx-auto mb-2 size-8" style={{ color: 'var(--success)' }} />
+                <p className="text-sm font-semibold" style={{ color: 'var(--ink)' }}>No disk orders</p>
+                <p className="text-xs" style={{ color: 'var(--muted)' }}>The order file is empty or all orders are older than 24h</p>
+              </div>
+            )}
+
+            <div className="space-y-2">
+              {diskOrders.map(o => (
+                <div key={o.tx_ref} className="rounded-2xl p-4" style={glass}>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="mono truncate text-xs font-semibold" style={{ color: 'var(--ink)' }}>
+                        {shortRef(o.tx_ref)}
+                      </p>
+                      <p className="mt-0.5 text-xs" style={{ color: 'var(--muted)' }}>
+                        {shortAddr(o.walletAddress)} · {new Date(o.createdAt).toLocaleString('en-NG', { dateStyle: 'short', timeStyle: 'short' })}
+                      </p>
+                    </div>
+                    <StatusBadge status={o.status} />
+                  </div>
+                  <div className="mt-2 flex items-center gap-4">
+                    <div>
+                      <p className="text-xs font-bold tabular-nums" style={{ color: 'var(--ink)' }}>
+                        ₦{o.ngnAmount.toLocaleString('en-NG')}
+                      </p>
+                      <p className="text-xs" style={{ color: 'var(--muted)' }}>NGN</p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-bold tabular-nums" style={{ color: 'var(--success)' }}>
+                        {Number(o.usdcAmount).toFixed(4)} USDC
+                      </p>
+                      <p className="text-xs" style={{ color: 'var(--muted)' }}>USDC</p>
+                    </div>
+                    {(o.status === 'verified' || o.status === 'failed') && (
+                      <button
+                        onClick={() => void retryTx(o.tx_ref)}
+                        disabled={retrying === o.tx_ref}
+                        className="ml-auto flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold text-white disabled:opacity-50"
+                        style={{ background: 'var(--accent)' }}
+                      >
+                        {retrying === o.tx_ref ? <Loader2 className="size-3.5 animate-spin" /> : <RotateCcw className="size-3.5" />}
+                        Retry
+                      </button>
+                    )}
+                    {o.txHash && (
+                      <a
+                        href={`${ARC_EXPLORER}${o.txHash}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="ml-auto flex items-center gap-1 rounded-lg px-2 py-1 text-xs"
+                        style={{ background: 'var(--accent-dim)', color: 'var(--success)' }}
+                      >
+                        TxHash <ExternalLink className="size-3" />
+                      </a>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
