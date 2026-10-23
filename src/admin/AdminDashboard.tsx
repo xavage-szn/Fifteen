@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   BarChart2, RefreshCw, AlertTriangle, Activity, HardDrive,
-  LogOut, CheckCircle2, XCircle, Clock, Loader2,
+  LogOut, CheckCircle2, Loader2,
   ChevronRight, ChevronLeft, ExternalLink, RotateCcw,
 } from 'lucide-react'
+import AnalyticsTab from './AnalyticsTab'
 import { supabase } from '@/lib/supabaseClient'
 import type { SseEvent } from '@/../server/sse'
 
@@ -240,7 +241,8 @@ export default function AdminDashboard({ token, onSignOut }: { token: string; on
       } catch { /* ignore */ }
     }
     return () => { es.close(); setLiveConnected(false) }
-  }, [tab])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, token])
 
   // ── Supabase Realtime — live tx updates ───────────────────────────────────
   // Use refs so the channel is never torn down when page/filter changes.
@@ -310,39 +312,39 @@ export default function AdminDashboard({ token, onSignOut }: { token: string; on
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
   return (
-    <div className="min-h-dvh" style={{ background: 'var(--bg-gradient)' }}>
+    <div className="flex h-dvh flex-col overflow-hidden" style={{ background: 'var(--bg-gradient)' }}>
 
       {/* ── Top bar ──────────────────────────────────────────────────────── */}
       <header
-        className="sticky top-0 z-30 flex items-center justify-between px-4 py-3"
+        className="flex shrink-0 items-center justify-between px-4 py-2.5"
         style={{ ...glass, borderBottom: '1px solid var(--glass-border)', borderRadius: 0 }}
       >
-        <span style={{ fontFamily: "'Funny Samurai', sans-serif", color: 'var(--accent)', fontSize: 20 }}>
+        <span style={{ fontFamily: "'Funny Samurai', sans-serif", color: 'var(--accent)', fontSize: 18 }}>
           fifteen admin
         </span>
         <button
           onClick={onSignOut}
-          className="flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold transition-all hover:scale-105"
+          className="flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold"
           style={soft}
         >
-          <LogOut className="size-3.5" style={{ color: 'var(--muted)' }} />
+          <LogOut className="size-3" style={{ color: 'var(--muted)' }} />
           <span style={{ color: 'var(--muted)' }}>Sign out</span>
         </button>
       </header>
 
       {/* ── Tab nav ──────────────────────────────────────────────────────── */}
-      <nav className="flex gap-1 overflow-x-auto px-4 py-3">
+      <nav className="flex shrink-0 gap-1 overflow-x-auto px-4 py-2" style={{ borderBottom: '1px solid var(--glass-border)' }}>
         {([
-          ['transactions', <BarChart2 key="b" className="size-3.5" />,  'Transactions'],
-          ['analytics',    <Activity  key="a" className="size-3.5" />,  'Analytics'],
-          ['disputes',     <AlertTriangle key="d" className="size-3.5" />, 'Disputes'],
-          ['disk',         <HardDrive key="k" className="size-3.5" />, 'Disk Orders'],
-          ['live',         <RefreshCw key="l" className="size-3.5 animate-spin" style={{ animationDuration: '3s' }} />, 'Live Logs'],
+          ['transactions', <BarChart2 key="b" className="size-3" />,  'Transactions'],
+          ['analytics',    <Activity  key="a" className="size-3" />,  'Analytics'],
+          ['disputes',     <AlertTriangle key="d" className="size-3" />, 'Disputes'],
+          ['disk',         <HardDrive key="k" className="size-3" />, 'Disk'],
+          ['live',         <RefreshCw key="l" className="size-3 animate-spin" style={{ animationDuration: '3s' }} />, 'Live'],
         ] as [Tab, React.ReactNode, string][]).map(([id, icon, label]) => (
           <button
             key={id}
             onClick={() => setTab(id)}
-            className="flex shrink-0 items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-all"
+            className="flex shrink-0 items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-all"
             style={tab === id
               ? { background: 'var(--accent)', color: 'white' }
               : { ...soft, color: 'var(--muted)' }}
@@ -352,17 +354,18 @@ export default function AdminDashboard({ token, onSignOut }: { token: string; on
         ))}
       </nav>
 
-      <main className="px-4 pb-12">
+      {/* ── Content — fills remaining height, clips overflow ─────────────── */}
+      <main className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 pt-3 pb-3">
 
         {/* ── TRANSACTIONS TAB ─────────────────────────────────────────── */}
         {tab === 'transactions' && (
-          <div className="space-y-3">
-            {/* Filter row */}
-            <div className="flex items-center gap-2">
+          <div className="flex min-h-0 flex-1 flex-col gap-2">
+            {/* Filter row — fixed */}
+            <div className="flex shrink-0 items-center gap-2">
               <select
                 value={statusFilter}
                 onChange={e => { setStatusFilter(e.target.value); setPage(1) }}
-                className="rounded-xl px-3 py-2 text-xs outline-none"
+                className="rounded-lg px-2.5 py-1.5 text-xs outline-none"
                 style={{ ...soft, color: 'var(--ink)' }}
               >
                 <option value="">All statuses</option>
@@ -370,54 +373,48 @@ export default function AdminDashboard({ token, onSignOut }: { token: string; on
                   <option key={s} value={s}>{s}</option>
                 ))}
               </select>
-              <button
-                onClick={() => void fetchTx()}
-                className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold"
-                style={soft}
-              >
-                <RefreshCw className={`size-3.5 ${loading ? 'animate-spin' : ''}`} style={{ color: 'var(--muted)' }} />
+              <button onClick={() => void fetchTx()} className="rounded-lg p-1.5" style={soft}>
+                <RefreshCw className={`size-3 ${loading ? 'animate-spin' : ''}`} style={{ color: 'var(--muted)' }} />
               </button>
               <span className="ml-auto text-xs" style={{ color: 'var(--muted)' }}>{total} total</span>
             </div>
 
-            {/* Table — mobile cards */}
-            {loading && txList.length === 0 && (
-              <div className="flex justify-center py-8"><Loader2 className="animate-spin" style={{ color: 'var(--muted)' }} /></div>
-            )}
-            <div className="space-y-2">
+            {/* Scrollable list */}
+            <div className="min-h-0 flex-1 overflow-y-auto space-y-1.5 pr-0.5">
+              {loading && txList.length === 0 && (
+                <div className="flex justify-center py-8"><Loader2 className="animate-spin" style={{ color: 'var(--muted)' }} /></div>
+              )}
               {txList.map(tx => (
                 <button
                   key={tx.id}
                   onClick={() => selectTx(tx)}
-                  className="w-full rounded-2xl p-4 text-left transition-all hover:scale-[1.005]"
+                  className="w-full rounded-xl p-3 text-left transition-all"
                   style={{
                     ...glass,
                     boxShadow: selectedTx?.tx_ref === tx.tx_ref ? `0 0 0 2px var(--accent)` : undefined,
                   }}
                 >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="mono truncate text-xs font-semibold" style={{ color: 'var(--ink)' }}>
-                        {shortRef(tx.tx_ref)}
-                      </p>
-                      <p className="mt-0.5 text-xs" style={{ color: 'var(--muted)' }}>
-                        {shortAddr(tx.wallet_address)} · {fmt(tx.created_at)}
-                      </p>
-                    </div>
-                    <StatusBadge status={tx.status} />
-                  </div>
-                  <div className="mt-2 flex items-center gap-4">
-                    <div>
-                      <p className="text-xs font-bold tabular-nums" style={{ color: 'var(--ink)' }}>
-                        ₦{tx.ngn_amount.toLocaleString('en-NG')}
-                      </p>
-                      <p className="text-xs" style={{ color: 'var(--muted)' }}>NGN paid</p>
-                    </div>
-                    <div>
-                      <p className="text-xs font-bold tabular-nums" style={{ color: 'var(--success)' }}>
-                        {Number(tx.usdc_amount).toFixed(4)} USDC
-                      </p>
-                      <p className="text-xs" style={{ color: 'var(--muted)' }}>delivered</p>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <p className="mono truncate text-xs font-semibold" style={{ color: 'var(--ink)' }}>
+                          {shortRef(tx.tx_ref)}
+                        </p>
+                        <StatusBadge status={tx.status} />
+                      </div>
+                      <div className="mt-0.5 flex items-center gap-3">
+                        <span className="text-xs tabular-nums font-semibold" style={{ color: 'var(--ink)' }}>
+                          ₦{tx.ngn_amount.toLocaleString('en-NG')}
+                        </span>
+                        <span className="text-xs" style={{ color: 'var(--muted)' }}>→</span>
+                        <span className="text-xs tabular-nums font-semibold" style={{ color: 'var(--success)' }}>
+                          {Number(tx.usdc_amount).toFixed(4)} USDC
+                        </span>
+                        <span className="text-xs" style={{ color: 'var(--muted)' }}>
+                          · {shortAddr(tx.wallet_address)}
+                        </span>
+                      </div>
+                      <p className="mt-0.5 text-xs" style={{ color: 'var(--subtle)' }}>{fmt(tx.created_at)}</p>
                     </div>
                     {tx.tx_hash && (
                       <a
@@ -425,34 +422,28 @@ export default function AdminDashboard({ token, onSignOut }: { token: string; on
                         target="_blank"
                         rel="noopener noreferrer"
                         onClick={e => e.stopPropagation()}
-                        className="ml-auto flex items-center gap-1 rounded-lg px-2 py-1 text-xs"
-                        style={{ background: 'var(--accent-dim)', color: 'var(--success)' }}
+                        className="shrink-0 rounded-lg p-1.5"
+                        style={{ background: 'var(--accent-dim)' }}
                       >
-                        TxHash <ExternalLink className="size-3" />
+                        <ExternalLink className="size-3" style={{ color: 'var(--success)' }} />
                       </a>
                     )}
                   </div>
 
-                  {/* Expanded: logs for this tx */}
+                  {/* Expanded logs */}
                   {selectedTx?.tx_ref === tx.tx_ref && (
-                    <div
-                      className="mt-3 rounded-xl p-3"
-                      style={soft}
-                      onClick={e => e.stopPropagation()}
-                    >
-                      <p className="mb-2 text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--muted)' }}>
-                        Transaction logs
-                      </p>
+                    <div className="mt-2 rounded-lg p-2.5" style={soft} onClick={e => e.stopPropagation()}>
+                      <p className="mb-1.5 text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--muted)' }}>Logs</p>
                       {logs.length === 0
                         ? <p className="text-xs" style={{ color: 'var(--subtle)' }}>No logs yet</p>
                         : (
-                          <div className="mono space-y-1 text-xs" style={{ maxHeight: 200, overflowY: 'auto' }}>
+                          <div className="mono space-y-0.5 text-xs" style={{ maxHeight: 160, overflowY: 'auto' }}>
                             {logs.map(l => (
                               <div key={l.id} className="flex gap-2">
-                                <span className="shrink-0 opacity-60" style={{ color: 'var(--muted)' }}>
+                                <span className="shrink-0 opacity-60" style={{ color: 'var(--muted)', minWidth: 52 }}>
                                   {new Date(l.created_at).toLocaleTimeString('en-NG', { hour12: false })}
                                 </span>
-                                <span className="shrink-0 font-bold uppercase" style={{ color: LEVEL_COLORS[l.level] ?? '#888', minWidth: 36 }}>
+                                <span className="shrink-0 font-bold uppercase" style={{ color: LEVEL_COLORS[l.level] ?? '#888', minWidth: 34 }}>
                                   {l.level}
                                 </span>
                                 <span style={{ color: 'var(--ink-2)' }}>{l.message}</span>
@@ -467,27 +458,15 @@ export default function AdminDashboard({ token, onSignOut }: { token: string; on
               ))}
             </div>
 
-            {/* Pagination */}
+            {/* Pagination — pinned at bottom */}
             {totalPages > 1 && (
-              <div className="flex items-center justify-center gap-2 pt-2">
-                <button
-                  disabled={page === 1}
-                  onClick={() => setPage(p => p - 1)}
-                  className="rounded-xl p-2 disabled:opacity-30"
-                  style={soft}
-                >
-                  <ChevronLeft className="size-4" style={{ color: 'var(--muted)' }} />
+              <div className="flex shrink-0 items-center justify-center gap-2 pt-1">
+                <button disabled={page === 1} onClick={() => setPage(p => p - 1)} className="rounded-lg p-1.5 disabled:opacity-30" style={soft}>
+                  <ChevronLeft className="size-3.5" style={{ color: 'var(--muted)' }} />
                 </button>
-                <span className="text-xs" style={{ color: 'var(--muted)' }}>
-                  {page} / {totalPages}
-                </span>
-                <button
-                  disabled={page >= totalPages}
-                  onClick={() => setPage(p => p + 1)}
-                  className="rounded-xl p-2 disabled:opacity-30"
-                  style={soft}
-                >
-                  <ChevronRight className="size-4" style={{ color: 'var(--muted)' }} />
+                <span className="text-xs" style={{ color: 'var(--muted)' }}>{page} / {totalPages}</span>
+                <button disabled={page >= totalPages} onClick={() => setPage(p => p + 1)} className="rounded-lg p-1.5 disabled:opacity-30" style={soft}>
+                  <ChevronRight className="size-3.5" style={{ color: 'var(--muted)' }} />
                 </button>
               </div>
             )}
@@ -496,256 +475,133 @@ export default function AdminDashboard({ token, onSignOut }: { token: string; on
 
         {/* ── ANALYTICS TAB ────────────────────────────────────────────── */}
         {tab === 'analytics' && (
-          <div className="space-y-3">
-            {!stats && <div className="flex justify-center py-8"><Loader2 className="animate-spin" style={{ color: 'var(--muted)' }} /></div>}
-            {stats && (
-              <>
-                {/* KPI grid */}
-                <div className="grid grid-cols-2 gap-3">
-                  {([
-                    ['Total Transactions', stats.total_count,       <BarChart2   key="t" className="size-4" />, 'var(--ink)'],
-                    ['Delivered',         stats.delivered_count,    <CheckCircle2 key="d" className="size-4" />, 'var(--success)'],
-                    ['Failed',            stats.failed_count,       <XCircle     key="f" className="size-4" />, 'var(--danger)'],
-                    ['Pending/Active',    stats.pending_count,      <Clock       key="p" className="size-4" />, '#f39c12'],
-                  ] as [string, number, React.ReactNode, string][]).map(([label, val, icon, col]) => (
-                    <div key={label} className="rounded-2xl p-4" style={glass}>
-                      <div className="mb-1 flex items-center gap-1.5" style={{ color: col }}>
-                        {icon}
-                        <p className="text-xs font-semibold">{label}</p>
-                      </div>
-                      <p className="display text-2xl font-bold tabular-nums" style={{ color: col }}>
-                        {val.toLocaleString('en-NG')}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Volume cards */}
-                <div className="rounded-2xl p-5" style={glass}>
-                  <p className="mb-3 text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--muted)' }}>Volume</p>
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <p className="text-sm" style={{ color: 'var(--ink-2)' }}>Total NGN processed</p>
-                      <p className="display text-lg font-bold tabular-nums" style={{ color: 'var(--ink)' }}>
-                        ₦{Number(stats.total_ngn_volume).toLocaleString('en-NG', { maximumFractionDigits: 0 })}
-                      </p>
-                    </div>
-                    <div className="h-px" style={{ background: 'var(--divider)' }} />
-                    <div className="flex items-center justify-between">
-                      <p className="text-sm" style={{ color: 'var(--ink-2)' }}>Total USDC delivered</p>
-                      <p className="display text-lg font-bold tabular-nums" style={{ color: 'var(--success)' }}>
-                        {Number(stats.total_usdc_volume).toFixed(4)} USDC
-                      </p>
-                    </div>
-                    <div className="h-px" style={{ background: 'var(--divider)' }} />
-                    <div className="flex items-center justify-between">
-                      <p className="text-sm" style={{ color: 'var(--ink-2)' }}>Avg USDC per transaction</p>
-                      <p className="display text-lg font-bold tabular-nums" style={{ color: 'var(--ink)' }}>
-                        {Number(stats.avg_usdc_per_tx).toFixed(4)} USDC
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Success rate */}
-                {stats.total_count > 0 && (
-                  <div className="rounded-2xl p-5" style={glass}>
-                    <p className="mb-2 text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--muted)' }}>Success rate</p>
-                    <div className="mb-2 flex items-end justify-between">
-                      <p className="display text-3xl font-bold" style={{ color: 'var(--success)' }}>
-                        {((stats.delivered_count / stats.total_count) * 100).toFixed(1)}%
-                      </p>
-                      <p className="text-xs" style={{ color: 'var(--muted)' }}>
-                        {stats.delivered_count} of {stats.total_count}
-                      </p>
-                    </div>
-                    <div className="h-2 w-full overflow-hidden rounded-full" style={{ background: 'var(--glass-soft-bg)' }}>
-                      <div
-                        className="h-full rounded-full transition-all"
-                        style={{ width: `${(stats.delivered_count / stats.total_count) * 100}%`, background: 'var(--accent)' }}
-                      />
-                    </div>
-                  </div>
-                )}
-              </>
-            )}
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <AnalyticsTab token={token} stats={stats} />
           </div>
         )}
 
         {/* ── DISPUTES TAB ─────────────────────────────────────────────── */}
         {tab === 'disputes' && (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <p className="text-sm font-semibold" style={{ color: 'var(--ink)' }}>
-                Failed &amp; stuck transactions
-              </p>
-              <button onClick={() => void fetchDisputes()} className="rounded-xl p-2" style={soft}>
-                <RefreshCw className="size-4" style={{ color: 'var(--muted)' }} />
+          <div className="flex min-h-0 flex-1 flex-col gap-2">
+            <div className="flex shrink-0 items-center justify-between">
+              <p className="text-xs font-semibold" style={{ color: 'var(--ink)' }}>Failed &amp; stuck</p>
+              <button onClick={() => void fetchDisputes()} className="rounded-lg p-1.5" style={soft}>
+                <RefreshCw className="size-3" style={{ color: 'var(--muted)' }} />
               </button>
             </div>
 
-            {disputes.length === 0 && (
-              <div className="rounded-2xl p-8 text-center" style={glass}>
-                <CheckCircle2 className="mx-auto mb-2 size-8" style={{ color: 'var(--success)' }} />
-                <p className="text-sm font-semibold" style={{ color: 'var(--ink)' }}>No disputes</p>
-                <p className="text-xs" style={{ color: 'var(--muted)' }}>All transactions are healthy</p>
-              </div>
-            )}
-
-            {disputes.map(tx => (
-              <div key={tx.id} className="rounded-2xl p-4" style={glass}>
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <p className="mono truncate text-xs font-semibold" style={{ color: 'var(--ink)' }}>
-                      {shortRef(tx.tx_ref)}
-                    </p>
-                    <p className="mt-0.5 text-xs" style={{ color: 'var(--muted)' }}>
-                      {shortAddr(tx.wallet_address)} · {fmt(tx.created_at)}
-                    </p>
-                  </div>
-                  <StatusBadge status={tx.status} />
+            <div className="min-h-0 flex-1 overflow-y-auto space-y-1.5">
+              {disputes.length === 0 && (
+                <div className="rounded-xl p-6 text-center" style={glass}>
+                  <CheckCircle2 className="mx-auto mb-1.5 size-6" style={{ color: 'var(--success)' }} />
+                  <p className="text-xs font-semibold" style={{ color: 'var(--ink)' }}>No disputes</p>
+                  <p className="text-xs" style={{ color: 'var(--muted)' }}>All transactions are healthy</p>
                 </div>
-                <div className="mt-2 flex items-center gap-4">
-                  <div>
-                    <p className="text-xs font-bold" style={{ color: 'var(--ink)' }}>
-                      ₦{tx.ngn_amount.toLocaleString('en-NG')}
-                    </p>
-                    <p className="text-xs" style={{ color: 'var(--muted)' }}>NGN</p>
+              )}
+              {disputes.map(tx => (
+                <div key={tx.id} className="rounded-xl p-3" style={glass}>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <p className="mono truncate text-xs font-semibold" style={{ color: 'var(--ink)' }}>{shortRef(tx.tx_ref)}</p>
+                        <StatusBadge status={tx.status} />
+                      </div>
+                      <div className="mt-0.5 flex items-center gap-3">
+                        <span className="text-xs tabular-nums" style={{ color: 'var(--ink)' }}>₦{tx.ngn_amount.toLocaleString('en-NG')}</span>
+                        <span className="text-xs" style={{ color: 'var(--muted)' }}>→</span>
+                        <span className="text-xs tabular-nums" style={{ color: 'var(--success)' }}>{Number(tx.usdc_amount).toFixed(4)} USDC</span>
+                      </div>
+                      <p className="mt-0.5 text-xs" style={{ color: 'var(--subtle)' }}>{shortAddr(tx.wallet_address)} · {fmt(tx.created_at)}</p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      {tx.tx_hash && (
+                        <a href={`${ARC_EXPLORER}${tx.tx_hash}`} target="_blank" rel="noopener noreferrer" className="rounded-lg p-1.5" style={{ background: 'var(--accent-dim)' }}>
+                          <ExternalLink className="size-3" style={{ color: 'var(--success)' }} />
+                        </a>
+                      )}
+                      <button
+                        onClick={() => void retryTx(tx.tx_ref)}
+                        disabled={retrying === tx.tx_ref}
+                        className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-bold text-white disabled:opacity-50"
+                        style={{ background: 'var(--accent)' }}
+                      >
+                        {retrying === tx.tx_ref ? <Loader2 className="size-3 animate-spin" /> : <RotateCcw className="size-3" />}
+                        Retry
+                      </button>
+                    </div>
                   </div>
-                  <div>
-                    <p className="text-xs font-bold" style={{ color: 'var(--success)' }}>
-                      {Number(tx.usdc_amount).toFixed(4)} USDC
-                    </p>
-                    <p className="text-xs" style={{ color: 'var(--muted)' }}>USDC</p>
-                  </div>
-                  <button
-                    onClick={() => void retryTx(tx.tx_ref)}
-                    disabled={retrying === tx.tx_ref}
-                    className="ml-auto flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold text-white disabled:opacity-50"
-                    style={{ background: 'var(--accent)' }}
-                  >
-                    {retrying === tx.tx_ref
-                      ? <Loader2 className="size-3.5 animate-spin" />
-                      : <RotateCcw className="size-3.5" />
-                    }
-                    Retry
-                  </button>
                 </div>
-                {tx.tx_hash && (
-                  <a
-                    href={`${ARC_EXPLORER}${tx.tx_hash}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="mt-2 flex items-center gap-1 text-xs"
-                    style={{ color: 'var(--success)' }}
-                  >
-                    View on explorer <ExternalLink className="size-3" />
-                  </a>
-                )}
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
         )}
 
         {/* ── DISK ORDERS TAB ──────────────────────────────────────────── */}
         {tab === 'disk' && (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-semibold" style={{ color: 'var(--ink)' }}>
-                  Orders on disk ({diskOrders.length})
-                </p>
-                <p className="text-xs" style={{ color: 'var(--muted)' }}>
-                  All orders loaded in server memory from .orders/orders.json
-                </p>
+          <div className="flex min-h-0 flex-1 flex-col gap-2">
+            {/* Header row — fixed */}
+            <div className="flex shrink-0 items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <p className="text-xs font-semibold" style={{ color: 'var(--ink)' }}>Disk ({diskOrders.length})</p>
+                {backfillMsg && <p className="text-xs" style={{ color: 'var(--success)' }}>{backfillMsg}</p>}
               </div>
               <div className="flex items-center gap-2">
-                <button onClick={() => void fetchDiskOrders()} className="rounded-xl p-2" style={soft}>
-                  <RefreshCw className="size-4" style={{ color: 'var(--muted)' }} />
+                <button
+                  onClick={() => void runBackfill()}
+                  disabled={backfilling || diskOrders.length === 0}
+                  className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-bold text-white disabled:opacity-40"
+                  style={{ background: 'var(--accent)' }}
+                >
+                  {backfilling ? <Loader2 className="size-3 animate-spin" /> : <HardDrive className="size-3" />}
+                  {backfilling ? 'Syncing…' : 'Sync to DB'}
+                </button>
+                <button onClick={() => void fetchDiskOrders()} className="rounded-lg p-1.5" style={soft}>
+                  <RefreshCw className="size-3" style={{ color: 'var(--muted)' }} />
                 </button>
               </div>
             </div>
 
-            {/* Backfill banner */}
-            <div className="rounded-2xl p-4" style={glass}>
-              <p className="mb-1 text-xs font-semibold" style={{ color: 'var(--ink)' }}>
-                Sync to database
-              </p>
-              <p className="mb-3 text-xs" style={{ color: 'var(--muted)' }}>
-                Upsert all disk orders into Supabase so they appear in Transactions and Analytics.
-                Safe to run multiple times — existing rows are updated, not duplicated.
-              </p>
-              {backfillMsg && (
-                <p className="mb-2 text-xs font-semibold" style={{ color: 'var(--success)' }}>{backfillMsg}</p>
+            {/* Scrollable list */}
+            <div className="min-h-0 flex-1 overflow-y-auto space-y-1.5">
+              {diskOrders.length === 0 && (
+                <div className="rounded-xl p-6 text-center" style={glass}>
+                  <CheckCircle2 className="mx-auto mb-1.5 size-6" style={{ color: 'var(--success)' }} />
+                  <p className="text-xs font-semibold" style={{ color: 'var(--ink)' }}>No disk orders</p>
+                </div>
               )}
-              <button
-                onClick={() => void runBackfill()}
-                disabled={backfilling || diskOrders.length === 0}
-                className="flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold text-white disabled:opacity-40"
-                style={{ background: 'var(--accent)' }}
-              >
-                {backfilling ? <Loader2 className="size-3.5 animate-spin" /> : <HardDrive className="size-3.5" />}
-                {backfilling ? 'Syncing…' : `Sync ${diskOrders.length} orders to Supabase`}
-              </button>
-            </div>
-
-            {diskOrders.length === 0 && (
-              <div className="rounded-2xl p-8 text-center" style={glass}>
-                <CheckCircle2 className="mx-auto mb-2 size-8" style={{ color: 'var(--success)' }} />
-                <p className="text-sm font-semibold" style={{ color: 'var(--ink)' }}>No disk orders</p>
-                <p className="text-xs" style={{ color: 'var(--muted)' }}>The order file is empty or all orders are older than 24h</p>
-              </div>
-            )}
-
-            <div className="space-y-2">
               {diskOrders.map(o => (
-                <div key={o.tx_ref} className="rounded-2xl p-4" style={glass}>
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="mono truncate text-xs font-semibold" style={{ color: 'var(--ink)' }}>
-                        {shortRef(o.tx_ref)}
-                      </p>
-                      <p className="mt-0.5 text-xs" style={{ color: 'var(--muted)' }}>
-                        {shortAddr(o.walletAddress)} · {new Date(o.createdAt).toLocaleString('en-NG', { dateStyle: 'short', timeStyle: 'short' })}
-                      </p>
+                <div key={o.tx_ref} className="rounded-xl p-3" style={glass}>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <p className="mono truncate text-xs font-semibold" style={{ color: 'var(--ink)' }}>{shortRef(o.tx_ref)}</p>
+                        <StatusBadge status={o.status} />
+                      </div>
+                      <div className="mt-0.5 flex items-center gap-3">
+                        <span className="text-xs tabular-nums" style={{ color: 'var(--ink)' }}>₦{o.ngnAmount.toLocaleString('en-NG')}</span>
+                        <span className="text-xs" style={{ color: 'var(--muted)' }}>→</span>
+                        <span className="text-xs tabular-nums" style={{ color: 'var(--success)' }}>{Number(o.usdcAmount).toFixed(4)} USDC</span>
+                      </div>
+                      <p className="mt-0.5 text-xs" style={{ color: 'var(--subtle)' }}>{shortAddr(o.walletAddress)} · {new Date(o.createdAt).toLocaleString('en-NG', { dateStyle: 'short', timeStyle: 'short' })}</p>
                     </div>
-                    <StatusBadge status={o.status} />
-                  </div>
-                  <div className="mt-2 flex items-center gap-4">
-                    <div>
-                      <p className="text-xs font-bold tabular-nums" style={{ color: 'var(--ink)' }}>
-                        ₦{o.ngnAmount.toLocaleString('en-NG')}
-                      </p>
-                      <p className="text-xs" style={{ color: 'var(--muted)' }}>NGN</p>
+                    <div className="flex shrink-0 items-center gap-2">
+                      {o.txHash && (
+                        <a href={`${ARC_EXPLORER}${o.txHash}`} target="_blank" rel="noopener noreferrer" className="rounded-lg p-1.5" style={{ background: 'var(--accent-dim)' }}>
+                          <ExternalLink className="size-3" style={{ color: 'var(--success)' }} />
+                        </a>
+                      )}
+                      {(o.status === 'verified' || o.status === 'failed') && (
+                        <button
+                          onClick={() => void retryTx(o.tx_ref)}
+                          disabled={retrying === o.tx_ref}
+                          className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-bold text-white disabled:opacity-50"
+                          style={{ background: 'var(--accent)' }}
+                        >
+                          {retrying === o.tx_ref ? <Loader2 className="size-3 animate-spin" /> : <RotateCcw className="size-3" />}
+                          Retry
+                        </button>
+                      )}
                     </div>
-                    <div>
-                      <p className="text-xs font-bold tabular-nums" style={{ color: 'var(--success)' }}>
-                        {Number(o.usdcAmount).toFixed(4)} USDC
-                      </p>
-                      <p className="text-xs" style={{ color: 'var(--muted)' }}>USDC</p>
-                    </div>
-                    {(o.status === 'verified' || o.status === 'failed') && (
-                      <button
-                        onClick={() => void retryTx(o.tx_ref)}
-                        disabled={retrying === o.tx_ref}
-                        className="ml-auto flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold text-white disabled:opacity-50"
-                        style={{ background: 'var(--accent)' }}
-                      >
-                        {retrying === o.tx_ref ? <Loader2 className="size-3.5 animate-spin" /> : <RotateCcw className="size-3.5" />}
-                        Retry
-                      </button>
-                    )}
-                    {o.txHash && (
-                      <a
-                        href={`${ARC_EXPLORER}${o.txHash}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="ml-auto flex items-center gap-1 rounded-lg px-2 py-1 text-xs"
-                        style={{ background: 'var(--accent-dim)', color: 'var(--success)' }}
-                      >
-                        TxHash <ExternalLink className="size-3" />
-                      </a>
-                    )}
                   </div>
                 </div>
               ))}
@@ -755,21 +611,17 @@ export default function AdminDashboard({ token, onSignOut }: { token: string; on
 
         {/* ── LIVE LOGS TAB ────────────────────────────────────────────── */}
         {tab === 'live' && (
-          <div className="space-y-3">
-            <div className="flex items-center gap-2">
+          <div className="flex min-h-0 flex-1 flex-col gap-2">
+            <div className="flex shrink-0 items-center gap-2">
               <div
-                className="size-2 rounded-full"
-                style={{ background: liveConnected ? '#52b36e' : '#e74c3c', boxShadow: liveConnected ? '0 0 6px #52b36e' : 'none' }}
+                className="size-2 rounded-full shrink-0"
+                style={{ background: liveConnected ? '#5BA05C' : '#e74c3c', boxShadow: liveConnected ? '0 0 6px #5BA05C' : 'none' }}
               />
-              <p className="text-xs font-semibold" style={{ color: 'var(--muted)' }}>
-                {liveConnected ? 'Connected — streaming live' : 'Connecting…'}
+              <p className="text-xs" style={{ color: 'var(--muted)' }}>
+                {liveConnected ? 'Live' : 'Connecting…'}
               </p>
               {liveLog.length > 0 && (
-                <button
-                  onClick={() => setLiveLog([])}
-                  className="ml-auto text-xs"
-                  style={{ color: 'var(--muted)' }}
-                >
+                <button onClick={() => setLiveLog([])} className="ml-auto text-xs" style={{ color: 'var(--muted)' }}>
                   Clear
                 </button>
               )}
@@ -777,28 +629,23 @@ export default function AdminDashboard({ token, onSignOut }: { token: string; on
 
             <div
               ref={liveRef}
-              className="mono overflow-y-auto rounded-2xl p-4 text-xs"
-              style={{ ...glass, height: 'calc(100dvh - 200px)', display: 'flex', flexDirection: 'column-reverse' }}
+              className="mono min-h-0 flex-1 overflow-y-auto rounded-xl p-3 text-xs"
+              style={{ ...glass, display: 'flex', flexDirection: 'column-reverse' }}
             >
               {liveLog.length === 0 && (
-                <p className="text-center" style={{ color: 'var(--subtle)' }}>
-                  Waiting for transactions…
-                </p>
+                <p className="text-center" style={{ color: 'var(--subtle)' }}>Waiting for transactions…</p>
               )}
               {liveLog.map(entry => (
                 <div key={entry.id} className="flex gap-2 py-0.5">
-                  <span className="shrink-0 opacity-50" style={{ color: 'var(--muted)', minWidth: 64 }}>
+                  <span className="shrink-0 opacity-50 tabular-nums" style={{ color: 'var(--muted)', minWidth: 56 }}>
                     {fmtTs(entry.ts)}
                   </span>
-                  <span
-                    className="shrink-0 font-bold uppercase"
-                    style={{ color: LEVEL_COLORS[entry.level] ?? '#888', minWidth: 40 }}
-                  >
+                  <span className="shrink-0 font-bold uppercase" style={{ color: LEVEL_COLORS[entry.level] ?? '#888', minWidth: 36 }}>
                     {entry.level}
                   </span>
                   {entry.tx_ref && (
-                    <span className="shrink-0 opacity-60" style={{ color: 'var(--accent)', minWidth: 96 }}>
-                      {entry.tx_ref.slice(0, 12)}
+                    <span className="shrink-0 opacity-60" style={{ color: 'var(--accent)', minWidth: 80 }}>
+                      {entry.tx_ref.slice(0, 10)}
                     </span>
                   )}
                   <span style={{ color: 'var(--ink-2)', wordBreak: 'break-all' }}>{entry.message}</span>

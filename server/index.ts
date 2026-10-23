@@ -166,6 +166,22 @@ interface Order {
   accessToken:   string   // per-transaction HMAC token issued at initialize
   status:        OrderStatus
   createdAt:     number
+  country?:      string
+  lat?:          number
+  lng?:          number
+}
+
+/** Fire-and-forget GeoIP lookup (ip-api.com, no key needed, 45 req/min free tier). */
+async function geoipLookup(ip: string): Promise<{ country?: string; lat?: number; lng?: number }> {
+  if (!ip || ip === 'unknown' || ip.startsWith('127.') || ip.startsWith('::1') || ip.startsWith('10.') || ip.startsWith('192.168.')) return {}
+  try {
+    const res = await fetch(`http://ip-api.com/json/${ip}?fields=status,country,lat,lon`, {
+      signal: AbortSignal.timeout(3000),
+    })
+    const data = await res.json() as { status: string; country?: string; lat?: number; lon?: number }
+    if (data.status === 'success') return { country: data.country, lat: data.lat, lng: data.lon }
+  } catch { /* non-critical */ }
+  return {}
 }
 
 // ─── Global Flutterwave tx-ID index — prevents cross-reference replay ──────────
@@ -435,6 +451,7 @@ app.post('/api/flw/initialize', async (c) => {
   const accessToken = generateOrderToken(tx_ref)
 
   const ipHash = createHash('sha256').update(ip).digest('hex').slice(0, 16)
+  const geo    = await geoipLookup(ip)
 
   pendingOrders.set(tx_ref, {
     walletAddress,
@@ -443,6 +460,9 @@ app.post('/api/flw/initialize', async (c) => {
     accessToken,
     status:      'pending',
     createdAt:   Date.now(),
+    country:     geo.country,
+    lat:         geo.lat,
+    lng:         geo.lng,
   })
   saveOrders(pendingOrders)
 
@@ -450,6 +470,7 @@ app.post('/api/flw/initialize', async (c) => {
     tx_ref, wallet_address: walletAddress, ngn_amount: amount,
     usdc_amount: parseFloat(usdcAmount), fee_bps: PLATFORM_FEE_BPS,
     rate, status: 'pending', ip_hash: ipHash,
+    country: geo.country, lat: geo.lat, lng: geo.lng,
   })
   log('info', tx_ref, `Order created — ₦${amount} → ${usdcAmount} USDC → ${walletAddress}`, { walletAddress, usdcAmount, ngnAmount: amount })
 
@@ -916,6 +937,73 @@ app.post('/api/admin/backfill', async (c) => {
     }
   }
   return c.json({ upserted, failed, total: entries.length })
+})
+
+// GET /admin/analytics — rich analytics data for the admin dashboard
+app.get('/api/admin/analytics', async (c) => {
+  const authHeader = c.req.header('authorization') ?? ''
+  if (!authHeader.startsWith('Bearer ') || authHeader.length < 20)
+    return c.json({ error: 'Unauthorized' }, 401)
+
+  const { db: sdb } = await import('./supabase.js')
+
+  // Pull all transactions (no pagination — analytics needs full dataset)
+  const { data: txs, error } = await sdb
+    .from('transactions')
+    .select('status, ngn_amount, usdc_amount, country, lat, lng, created_at')
+    .order('created_at', { ascending: true })
+
+  if (error) {
+    // Fallback: compute from disk orders
+    const entries = [...pendingOrders.entries()]
+    const diskStats = {
+      timeSeries:      [] as { date: string; ngn: number; usdc: number; count: number }[],
+      statusBreakdown: {} as Record<string, number>,
+      countryBreakdown:[] as { country: string; count: number; usdc: number }[],
+      globePoints:     [] as { lat: number; lng: number; usdc: number; country: string }[],
+    }
+    for (const [, o] of entries) {
+      diskStats.statusBreakdown[o.status] = (diskStats.statusBreakdown[o.status] ?? 0) + 1
+      if (o.lat && o.lng) diskStats.globePoints.push({ lat: o.lat, lng: o.lng, usdc: parseFloat(o.usdcAmount), country: o.country ?? 'Unknown' })
+    }
+    return c.json(diskStats)
+  }
+
+  // Time series — group by day
+  const byDay = new Map<string, { ngn: number; usdc: number; count: number }>()
+  const byStatus: Record<string, number> = {}
+  const byCountry = new Map<string, { count: number; usdc: number }>()
+  const globePoints: { lat: number; lng: number; usdc: number; country: string }[] = []
+
+  for (const tx of txs ?? []) {
+    const day = tx.created_at.slice(0, 10)
+    const existing = byDay.get(day) ?? { ngn: 0, usdc: 0, count: 0 }
+    byDay.set(day, {
+      ngn:   existing.ngn   + Number(tx.ngn_amount),
+      usdc:  existing.usdc  + Number(tx.usdc_amount),
+      count: existing.count + 1,
+    })
+    byStatus[tx.status] = (byStatus[tx.status] ?? 0) + 1
+
+    if (tx.country) {
+      const c2 = byCountry.get(tx.country) ?? { count: 0, usdc: 0 }
+      byCountry.set(tx.country, { count: c2.count + 1, usdc: c2.usdc + Number(tx.usdc_amount) })
+    }
+    if (tx.lat && tx.lng) {
+      globePoints.push({ lat: tx.lat, lng: tx.lng, usdc: Number(tx.usdc_amount), country: tx.country ?? 'Unknown' })
+    }
+  }
+
+  const timeSeries = [...byDay.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, v]) => ({ date, ...v }))
+
+  const countryBreakdown = [...byCountry.entries()]
+    .map(([country, v]) => ({ country, ...v }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10)
+
+  return c.json({ timeSeries, statusBreakdown: byStatus, countryBreakdown, globePoints })
 })
 
 // GET /treasury/status — ops health check

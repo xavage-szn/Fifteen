@@ -33,6 +33,9 @@ export interface TxRecord {
   flw_tx_id?:     number | null
   tx_hash?:       string | null
   ip_hash?:       string | null
+  country?:       string | null
+  lat?:           number | null
+  lng?:           number | null
 }
 
 export interface LogRecord {

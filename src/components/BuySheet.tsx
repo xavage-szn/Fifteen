@@ -54,7 +54,7 @@ function Row({ label, value, mono, accent }: { label: string; value: string; mon
 }
 
 export default function BuySheet({
-  open, onClose, usdcRate, walletAddress,
+  open, onClose, walletAddress,
   ngnAmount: initialNgn, lockedUsdcAmount,
 }: BuySheetProps) {
   const [step,      setStep]      = useState<Step>('confirm')
@@ -222,7 +222,7 @@ export default function BuySheet({
       setErrorMsg(err instanceof Error ? err.message : 'Something went wrong')
       setStep('error')
     }
-  }, [canPay, walletAddress, parsedNgn, customerEmail, loadFlwSdk, usdcRate, verifyAndDeliver])
+  }, [canPay, walletAddress, parsedNgn, customerEmail, loadFlwSdk, verifyAndDeliver])
 
   const handleClose = () => {
     callbackFired.current = false
