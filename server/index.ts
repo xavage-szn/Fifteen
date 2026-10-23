@@ -138,6 +138,21 @@ function getTreasuryClients() {
   return { account, publicClient, walletClient }
 }
 
+/** Read the treasury's live USDC balance (human-readable, 6 decimals). Returns null on error. */
+async function getTreasuryUsdcBalance(): Promise<number | null> {
+  const clients = getTreasuryClients()
+  if (!clients) return null
+  try {
+    const raw = await clients.publicClient.readContract({
+      address: USDC_ADDRESS, abi: erc20Abi, functionName: 'balanceOf',
+      args: [clients.account.address],
+    })
+    return Number(raw) / 10 ** USDC_DECIMALS
+  } catch {
+    return null
+  }
+}
+
 // ─── Order store — file-backed so orders survive server restarts ───────────────
 
 type OrderStatus = 'pending' | 'verified' | 'delivering' | 'delivered'
@@ -364,6 +379,16 @@ app.post('/api/flw/initialize', async (c) => {
   const rate       = await fetchNgnUsdcRate()
   const usdcAmount = calcUsdcAmount(amount, rate)
   const tx_ref     = uniqueTxRef()
+
+  // ── Treasury pre-flight: block payment if treasury can't fill this order ──
+  const treasuryBal = await getTreasuryUsdcBalance()
+  const orderUsdc   = parseFloat(usdcAmount)
+  if (treasuryBal !== null && treasuryBal < orderUsdc) {
+    console.warn(`[treasury] insufficient balance — has ${treasuryBal.toFixed(2)} USDC, order needs ${orderUsdc.toFixed(2)} USDC`)
+    return c.json({
+      error: `Service temporarily unavailable — insufficient USDC liquidity. Please try a smaller amount or try again later.`,
+    }, 503)
+  }
 
   const origin      = c.req.header('origin') ?? 'http://localhost:5173'
   const redirectUrl = `${origin}/payment-callback`
@@ -904,6 +929,78 @@ if (process.env.NODE_ENV === 'production') {
   })
 }
 
+// ─── Queue filler — retry verified orders the treasury can now cover ─────────
+/**
+ * Shared delivery logic used by both the HTTP deliver endpoint and the queue
+ * filler. Atomically locks the order to 'delivering', sends USDC on-chain,
+ * and updates both the in-memory store and Supabase.
+ * Returns the txHash on success, throws on failure.
+ */
+async function deliverOrder(tx_ref: string, order: Order): Promise<string> {
+  const clients = getTreasuryClients()
+  if (!clients) throw new Error('Treasury wallet not configured')
+
+  // Atomic lock
+  pendingOrders.set(tx_ref, { ...order, status: 'delivering' })
+  saveOrders(pendingOrders)
+  void updateTxStatus(tx_ref, 'delivering')
+  log('info', tx_ref, `[queue] Initiating USDC delivery — ${order.usdcAmount} USDC → ${order.walletAddress}`)
+  emit({ type: 'tx_update', tx_ref, status: 'delivering', ts: Date.now() })
+
+  const rawAmount = parseUnits(order.usdcAmount, USDC_DECIMALS)
+  const txHash = await clients.walletClient.writeContract({
+    address:      USDC_ADDRESS,
+    abi:          erc20Abi,
+    functionName: 'transfer',
+    args:         [order.walletAddress as Hex, rawAmount],
+  })
+
+  pendingOrders.set(tx_ref, { ...order, status: 'delivered', txHash })
+  saveOrders(pendingOrders)
+  void updateTxStatus(tx_ref, 'delivered', { tx_hash: txHash })
+  log('info', tx_ref, `[queue] USDC delivered`, { txHash, usdcAmount: order.usdcAmount })
+  emit({ type: 'tx_update', tx_ref, status: 'delivered', txHash, ts: Date.now() })
+  return txHash
+}
+
+/**
+ * Every 30 s: scan all verified orders and deliver those the treasury can cover.
+ * Works largest-first so the treasury fills as many orders as possible.
+ */
+function startQueueFiller() {
+  setInterval(async () => {
+    const verified = [...pendingOrders.entries()]
+      .filter(([, o]) => o.status === 'verified')
+      .sort((a, b) => parseFloat(a[1].usdcAmount) - parseFloat(b[1].usdcAmount)) // smallest first = fill more orders
+
+    if (verified.length === 0) return
+
+    const balance = await getTreasuryUsdcBalance()
+    if (balance === null || balance <= 0) return
+
+    let remaining = balance
+    for (const [tx_ref, order] of verified) {
+      const needed = parseFloat(order.usdcAmount)
+      if (needed > remaining) {
+        log('warn', tx_ref, `[queue] Treasury has ${remaining.toFixed(2)} USDC — skipping order needing ${needed.toFixed(2)}`)
+        continue
+      }
+      try {
+        await deliverOrder(tx_ref, order)
+        remaining -= needed
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        log('error', tx_ref, `[queue] Delivery failed: ${msg}`)
+        // Roll back to verified so it will be retried next cycle
+        pendingOrders.set(tx_ref, { ...order, status: 'verified' })
+        saveOrders(pendingOrders)
+        void updateTxStatus(tx_ref, 'verified')
+      }
+    }
+  }, 30_000)
+  console.log('[queue] filler started — scans verified orders every 30s')
+}
+
 // ─── Start ────────────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3001
@@ -926,4 +1023,5 @@ serve({ fetch: app.fetch, port: PORT }, () => {
   } else {
     console.warn('[rate] MONIERATE_API_KEY not set — falling back to CoinGecko mid-market rate')
   }
+  startQueueFiller()
 })
