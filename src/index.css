@@ -3,87 +3,61 @@
 @tailwind utilities;
 
 /* Prevent iOS/Android zoom on input focus */
-input, select, textarea {
-  font-size: 16px !important;
-}
+input, select, textarea { font-size: 16px !important; }
 
-/* ── 15market brand tokens — LIGHT ─────────────────────────────────────────── */
+/* ── 15market tokens — LIGHT ──────────────────────────────────────────────── */
 :root {
-  --brand:          #52b36e;   /* logo green */
-  --brand-dark:     #3a8f54;   /* hover / deeper */
-  --brand-light:    #d6f0de;   /* tinted backgrounds */
+  --green:        #5BA05C;   /* exact logo green */
+  --green-hover:  #4a8a4b;
+  --green-dim:    rgba(91,160,92,0.12);
+  --green-border: rgba(91,160,92,0.30);
 
-  --bg:             #f5faf6;
-  --bg-gradient:    linear-gradient(180deg, #f0f8f2 0%, #f8fdf9 55%, #f2faf5 100%);
-  --surface:        rgba(255,255,255,0.78);
-  --surface-strong: rgba(255,255,255,0.94);
-  --surface-muted:  #edf7f0;
+  --bg:           #ffffff;
+  --ink:          #0d0d0d;
+  --ink-2:        #333333;
+  --muted:        #666666;
+  --subtle:       #999999;
+  --divider:      rgba(0,0,0,0.08);
+  --danger:       #c0392b;
 
-  --ink:            #0f2d1c;
-  --ink-2:          #1e3d2a;
-  --muted:          #4a6357;
-  --subtle:         #7a9488;
-  --border:         rgba(15,45,28,0.10);
-  --border-strong:  rgba(15,45,28,0.30);
+  --accent:       #5BA05C;
+  --accent-hover: #4a8a4b;
+  --accent-dim:   rgba(91,160,92,0.10);
+  --success:      #5BA05C;
+  --ngn:          #008751;
 
-  --accent:         #52b36e;
-  --accent-hover:   #3a8f54;
-  --accent-dim:     rgba(82,179,110,0.14);
-
-  --success:        #2e9e5a;
-  --danger:         #c0392b;
-  --ngn:            #008751;
-
-  --pill-bg:        rgba(255,255,255,0.72);
-  --pill-border:    rgba(255,255,255,0.80);
-  --glass-bg:       rgba(255,255,255,0.68);
-  --glass-border:   rgba(255,255,255,0.72);
-  --glass-soft-bg:  rgba(255,255,255,0.50);
-  --glass-soft-border: rgba(255,255,255,0.58);
-  --divider:        rgba(15,45,28,0.07);
-  --arrow-bg:       rgba(15,45,28,0.05);
-
-  --toggle-track:   rgba(15,45,28,0.12);
+  --surface:      #ffffff;
+  --surface-strong: #ffffff;
+  --toggle-track: rgba(0,0,0,0.06);
+  --glass-border: rgba(0,0,0,0.08);
+  --bg-gradient:  #ffffff;
 }
 
-/* ── 15market brand tokens — DARK (pure neutral, accent stays green) ─────────── */
+/* ── DARK — pure black ────────────────────────────────────────────────────── */
 :root.dark {
-  --bg:             #0a0a0a;
-  --bg-gradient:    linear-gradient(180deg, #0a0a0a 0%, #111111 55%, #0d0d0d 100%);
-  --surface:        rgba(28,28,28,0.92);
-  --surface-strong: rgba(22,22,22,0.97);
-  --surface-muted:  #161616;
+  --bg:           #000000;
+  --ink:          #f5f5f5;
+  --ink-2:        #cccccc;
+  --muted:        #888888;
+  --subtle:       #555555;
+  --divider:      rgba(255,255,255,0.07);
+  --danger:       #e05c5c;
 
-  --ink:            #f0f0f0;
-  --ink-2:          #c8c8c8;
-  --muted:          #888888;
-  --subtle:         #555555;
-  --border:         rgba(255,255,255,0.08);
-  --border-strong:  rgba(255,255,255,0.20);
+  --accent:       #5BA05C;
+  --accent-hover: #6db86e;
+  --accent-dim:   rgba(91,160,92,0.12);
+  --success:      #5BA05C;
+  --ngn:          #5BA05C;
 
-  --accent:         #52b36e;   /* brand green stays — it's the only color */
-  --accent-hover:   #6acb84;
-  --accent-dim:     rgba(82,179,110,0.15);
-
-  --success:        #52b36e;
-  --danger:         #e05c5c;
-  --ngn:            #52b36e;
-
-  --pill-bg:        rgba(38,38,38,0.90);
-  --pill-border:    rgba(255,255,255,0.10);
-  --glass-bg:       rgba(24,24,24,0.82);
-  --glass-border:   rgba(255,255,255,0.09);
-  --glass-soft-bg:  rgba(32,32,32,0.70);
-  --glass-soft-border: rgba(255,255,255,0.08);
-  --divider:        rgba(255,255,255,0.06);
-  --arrow-bg:       rgba(255,255,255,0.06);
-
-  --toggle-track:   rgba(255,255,255,0.10);
+  --surface:      #000000;
+  --surface-strong: #0a0a0a;
+  --toggle-track: rgba(255,255,255,0.08);
+  --glass-border: rgba(255,255,255,0.08);
+  --bg-gradient:  #000000;
 }
 
 * { box-sizing: border-box; }
-
-html { transition: background-color 0.25s, color 0.25s; }
+html { transition: background-color 0.2s, color 0.2s; }
 
 body {
   margin: 0;
@@ -96,9 +70,9 @@ body {
 .display { font-family: 'Space Grotesk', sans-serif; letter-spacing: -0.03em; }
 .mono    { font-family: 'JetBrains Mono', Menlo, monospace; }
 
-/* ── Sonner toast dark-mode fix ─────────────────────────────────────────────── */
+/* Sonner dark-mode */
 :root.dark [data-sonner-toaster] {
-  --normal-bg:    #1e1e1e;
-  --normal-border:rgba(255,255,255,0.10);
-  --normal-text:  #f0f0f0;
+  --normal-bg:     #111111;
+  --normal-border: rgba(255,255,255,0.08);
+  --normal-text:   #f0f0f0;
 }
