@@ -130,9 +130,26 @@ export default function AdminDashboard({ token, onSignOut }: { token: string; on
       headers: { Authorization: `Bearer ${token}` },
     })
     if (res.ok) {
-      const json = await res.json() as { data: TxRow[]; total: number }
+      const json = await res.json() as { data: TxRow[]; total: number; source?: string }
       setTxList(json.data ?? [])
       setTotal(json.total ?? 0)
+    } else {
+      // Fallback: pull from disk orders so the admin always sees something
+      const dr = await fetch('/api/admin/disk-orders', { headers: { Authorization: `Bearer ${token}` } })
+      if (dr.ok) {
+        const dj = await dr.json() as { data: DiskOrder[] }
+        const rows: TxRow[] = (dj.data ?? []).map(o => ({
+          id: o.tx_ref, tx_ref: o.tx_ref, wallet_address: o.walletAddress,
+          ngn_amount: o.ngnAmount, usdc_amount: parseFloat(o.usdcAmount),
+          fee_bps: 150, rate: 0,
+          status: o.status as TxRow['status'],
+          flw_tx_id: o.flwTxId ?? null, tx_hash: o.txHash ?? null, ip_hash: null,
+          created_at: new Date(o.createdAt).toISOString(),
+          updated_at: new Date(o.createdAt).toISOString(),
+        }))
+        setTxList(rows)
+        setTotal(rows.length)
+      }
     }
     setLoading(false)
   }, [token, page, statusFilter])
@@ -199,9 +216,7 @@ export default function AdminDashboard({ token, onSignOut }: { token: string; on
   // ── SSE live log ───────────────────────────────────────────────────────────
   useEffect(() => {
     if (tab !== 'live') return
-    const es = new EventSource(`/api/admin/stream?_t=${Date.now()}`)
-    // Can't set headers on EventSource — pass token via cookie or use fetch polyfill
-    // For now we rely on the server's loose bearer check for the initial request
+    const es = new EventSource(`/api/admin/stream?token=${encodeURIComponent(token)}&_t=${Date.now()}`)
     es.onopen = () => setLiveConnected(true)
     es.onerror = () => setLiveConnected(false)
     es.onmessage = (e: MessageEvent) => {
@@ -228,16 +243,23 @@ export default function AdminDashboard({ token, onSignOut }: { token: string; on
   }, [tab])
 
   // ── Supabase Realtime — live tx updates ───────────────────────────────────
+  // Use refs so the channel is never torn down when page/filter changes.
+  const fetchTxRef    = useRef(fetchTx)
+  const fetchStatsRef = useRef(fetchStats)
+  useEffect(() => { fetchTxRef.current    = fetchTx    }, [fetchTx])
+  useEffect(() => { fetchStatsRef.current = fetchStats }, [fetchStats])
+
   useEffect(() => {
     const ch = supabase
       .channel('admin-tx-updates')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' }, () => {
-        void fetchTx()
-        void fetchStats()
+        void fetchTxRef.current()
+        void fetchStatsRef.current()
       })
       .subscribe()
     return () => { void supabase.removeChannel(ch) }
-  }, [fetchTx, fetchStats])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // ── Load on mount and tab/page/filter change ─────────────────────────────
   useEffect(() => {

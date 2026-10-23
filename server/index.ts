@@ -716,10 +716,13 @@ app.post('/api/flw/payload-hash', async (c) => {
 })
 
 // GET /admin/stream — SSE live transaction log feed (admin-only via Supabase JWT)
+// EventSource cannot set custom headers — accept token via Authorization header OR
+// ?token= query param (the browser passes it in the URL when opening the stream).
 app.get('/api/admin/stream', (c) => {
-  // Validate Supabase JWT from Authorization header
   const authHeader = c.req.header('authorization') ?? ''
-  if (!authHeader.startsWith('Bearer ') || authHeader.length < 20) {
+  const queryToken = c.req.query('token') ?? ''
+  const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : queryToken
+  if (!bearer || bearer.length < 20) {
     return c.json({ error: 'Unauthorized' }, 401)
   }
 
