@@ -368,6 +368,25 @@ function log(
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
+// POST /api/visitors/ping — anonymous session ping to count total visitors.
+// Called once per browser session on first page load. No personal data stored.
+app.post('/api/visitors/ping', async (c) => {
+  const body      = await c.req.json<{ sessionId?: string; traded?: boolean }>().catch(() => ({}))
+  const sessionId = body.sessionId ?? 'unknown'
+  const traded    = body.traded ?? false
+  const ip        = clientIp(c)
+  const ipHash    = createHash('sha256').update(ip).digest('hex').slice(0, 16)
+
+  const { db } = await import('./supabase.js')
+  // Upsert on session_id: if traded becomes true, mark it permanently
+  const { error } = await db.from('visitors').upsert(
+    { session_id: sessionId, ip_hash: ipHash, traded },
+    { onConflict: 'session_id', ignoreDuplicates: false }
+  )
+  if (error) console.warn('[visitors] ping error:', error.message)
+  return c.json({ ok: true })
+})
+
 // GET /rate
 app.get('/api/rate', async (c) => {
   const rate = await fetchNgnUsdcRate()
@@ -472,6 +491,16 @@ app.post('/api/flw/initialize', async (c) => {
     rate, status: 'pending', ip_hash: ipHash,
     country: geo.country, lat: geo.lat, lng: geo.lng,
   })
+
+  // Mark the visitor session as having traded (best-effort, non-blocking)
+  const sessionId = c.req.header('x-session-id')
+  if (sessionId) {
+    const { db: vdb } = await import('./supabase.js')
+    void vdb.from('visitors')
+      .update({ traded: true })
+      .eq('session_id', sessionId)
+  }
+
   log('info', tx_ref, `Order created — ₦${amount} → ${usdcAmount} USDC → ${walletAddress}`, { walletAddress, usdcAmount, ngnAmount: amount })
 
   // accessToken is returned to the frontend and MUST be supplied on verify/deliver
@@ -824,6 +853,7 @@ app.post('/api/admin/retry/:tx_ref', async (c) => {
 })
 
 // GET /admin/transactions — paginated transaction list for admin console
+// When ?status=disputes, returns: Supabase failed/stuck + disk verified/delivering (merged, deduped)
 app.get('/api/admin/transactions', async (c) => {
   const authHeader = c.req.header('authorization') ?? ''
   if (!authHeader.startsWith('Bearer ') || authHeader.length < 20)
@@ -835,6 +865,34 @@ app.get('/api/admin/transactions', async (c) => {
   const from   = (page - 1) * limit
 
   const { db } = await import('./supabase.js')
+
+  // Special disputes query: merge Supabase failed + disk verified/delivering
+  if (status === 'disputes') {
+    const { data: dbRows } = await db
+      .from('transactions')
+      .select('*')
+      .in('status', ['failed', 'verified', 'delivering'])
+      .order('created_at', { ascending: false })
+
+    // Add disk orders not already in Supabase
+    const dbRefs = new Set((dbRows ?? []).map((r: { tx_ref: string }) => r.tx_ref))
+    const diskDisputes = [...pendingOrders.entries()]
+      .filter(([tx_ref, o]) => !dbRefs.has(tx_ref) && (o.status === 'verified' || o.status === 'delivering'))
+      .map(([tx_ref, o]) => ({
+        id: tx_ref, tx_ref, wallet_address: o.walletAddress,
+        ngn_amount: o.ngnAmount, usdc_amount: parseFloat(o.usdcAmount),
+        fee_bps: 150, rate: 0, status: o.status,
+        flw_tx_id: o.flwTxId ?? null, tx_hash: o.txHash ?? null, ip_hash: null,
+        created_at: new Date(o.createdAt).toISOString(),
+        updated_at: new Date(o.createdAt).toISOString(),
+      }))
+
+    const merged = [...(dbRows ?? []), ...diskDisputes]
+      .sort((a, b) => new Date((b as {created_at:string}).created_at).getTime() - new Date((a as {created_at:string}).created_at).getTime())
+
+    return c.json({ data: merged, total: merged.length, page: 1, limit: merged.length })
+  }
+
   let query = db.from('transactions')
     .select('*', { count: 'exact' })
     .order('created_at', { ascending: false })
@@ -947,52 +1005,93 @@ app.get('/api/admin/analytics', async (c) => {
 
   const { db: sdb } = await import('./supabase.js')
 
-  // Pull all transactions (no pagination — analytics needs full dataset)
-  const { data: txs, error } = await sdb
-    .from('transactions')
-    .select('status, ngn_amount, usdc_amount, country, lat, lng, created_at')
-    .order('created_at', { ascending: true })
+  // Pull all transactions + visitors in parallel
+  const [txResult, visitorResult] = await Promise.all([
+    sdb.from('transactions')
+      .select('status, ngn_amount, usdc_amount, country, lat, lng, created_at, wallet_address')
+      .order('created_at', { ascending: true }),
+    sdb.from('visitors')
+      .select('session_id, traded, created_at')
+      .order('created_at', { ascending: true }),
+  ])
 
-  if (error) {
-    // Fallback: compute from disk orders
-    const entries = [...pendingOrders.entries()]
-    const diskStats = {
-      timeSeries:      [] as { date: string; ngn: number; usdc: number; count: number }[],
-      statusBreakdown: {} as Record<string, number>,
-      countryBreakdown:[] as { country: string; count: number; usdc: number }[],
-      globePoints:     [] as { lat: number; lng: number; usdc: number; country: string }[],
-    }
-    for (const [, o] of entries) {
-      diskStats.statusBreakdown[o.status] = (diskStats.statusBreakdown[o.status] ?? 0) + 1
-      if (o.lat && o.lng) diskStats.globePoints.push({ lat: o.lat, lng: o.lng, usdc: parseFloat(o.usdcAmount), country: o.country ?? 'Unknown' })
-    }
-    return c.json(diskStats)
-  }
+  const txs      = txResult.data  ?? []
+  const visitors = visitorResult.data ?? []
 
-  // Time series — group by day
-  const byDay = new Map<string, { ngn: number; usdc: number; count: number }>()
+  // Merge disk orders so stuck trades always appear in analytics
+  const diskEntries     = [...pendingOrders.entries()]
+  const supabaseWallets = new Set(txs.map(t => (t as { wallet_address?: string }).wallet_address))
+
+  // Time series — group by day (tx count + visitor count)
+  const byDay = new Map<string, { ngn: number; usdc: number; count: number; visitors: number; traders: number }>()
   const byStatus: Record<string, number> = {}
   const byCountry = new Map<string, { count: number; usdc: number }>()
   const globePoints: { lat: number; lng: number; usdc: number; country: string }[] = []
+  const uniqueTraders = new Set<string>()
 
-  for (const tx of txs ?? []) {
-    const day = tx.created_at.slice(0, 10)
-    const existing = byDay.get(day) ?? { ngn: 0, usdc: 0, count: 0 }
+  // Process Supabase transactions
+  for (const tx of txs) {
+    const row = tx as { status: string; ngn_amount: number; usdc_amount: number; country?: string; lat?: number; lng?: number; created_at: string; wallet_address?: string }
+    const day = row.created_at.slice(0, 10)
+    const existing = byDay.get(day) ?? { ngn: 0, usdc: 0, count: 0, visitors: 0, traders: 0 }
     byDay.set(day, {
-      ngn:   existing.ngn   + Number(tx.ngn_amount),
-      usdc:  existing.usdc  + Number(tx.usdc_amount),
-      count: existing.count + 1,
+      ngn:     existing.ngn   + Number(row.ngn_amount),
+      usdc:    existing.usdc  + Number(row.usdc_amount),
+      count:   existing.count + 1,
+      visitors: existing.visitors,
+      traders: existing.traders,
     })
-    byStatus[tx.status] = (byStatus[tx.status] ?? 0) + 1
+    byStatus[row.status] = (byStatus[row.status] ?? 0) + 1
 
-    if (tx.country) {
-      const c2 = byCountry.get(tx.country) ?? { count: 0, usdc: 0 }
-      byCountry.set(tx.country, { count: c2.count + 1, usdc: c2.usdc + Number(tx.usdc_amount) })
+    if (row.wallet_address && row.status === 'delivered') uniqueTraders.add(row.wallet_address)
+
+    if (row.country) {
+      const c2 = byCountry.get(row.country) ?? { count: 0, usdc: 0 }
+      byCountry.set(row.country, { count: c2.count + 1, usdc: c2.usdc + Number(row.usdc_amount) })
     }
-    if (tx.lat && tx.lng) {
-      globePoints.push({ lat: tx.lat, lng: tx.lng, usdc: Number(tx.usdc_amount), country: tx.country ?? 'Unknown' })
+    if (row.lat && row.lng) {
+      globePoints.push({ lat: row.lat, lng: row.lng, usdc: Number(row.usdc_amount), country: row.country ?? 'Unknown' })
     }
   }
+
+  // Merge disk-only orders (verified/delivering — stuck, paid but undelivered)
+  for (const [, o] of diskEntries) {
+    if (!supabaseWallets.has(o.walletAddress) && (o.status === 'verified' || o.status === 'delivering')) {
+      byStatus[o.status] = (byStatus[o.status] ?? 0) + 1
+      if (o.lat && o.lng) globePoints.push({ lat: o.lat, lng: o.lng, usdc: parseFloat(o.usdcAmount), country: o.country ?? 'Unknown' })
+    }
+  }
+
+  // Visitor stats — group by day
+  const byDayVisitors = new Map<string, { total: number; bounced: number; traded: number }>()
+  let totalVisitors = 0
+  let bouncedVisitors = 0
+
+  for (const v of visitors) {
+    const row = v as { session_id: string; traded: boolean; created_at: string }
+    totalVisitors++
+    const day = row.created_at.slice(0, 10)
+    const existing = byDayVisitors.get(day) ?? { total: 0, bounced: 0, traded: 0 }
+    if (!row.traded) {
+      bouncedVisitors++
+      byDayVisitors.set(day, { ...existing, total: existing.total + 1, bounced: existing.bounced + 1 })
+    } else {
+      byDayVisitors.set(day, { ...existing, total: existing.total + 1, traded: existing.traded + 1 })
+    }
+  }
+
+  // Merge visitor counts into time series
+  for (const [day, vRow] of byDayVisitors) {
+    const existing = byDay.get(day) ?? { ngn: 0, usdc: 0, count: 0, visitors: 0, traders: 0 }
+    byDay.set(day, { ...existing, visitors: vRow.total, traders: vRow.traded })
+  }
+
+  // Build bounce series (all days with any visitor activity)
+  const allDays = new Set([...byDay.keys(), ...byDayVisitors.keys()])
+  const bounceSeries = [...allDays].sort().map(date => {
+    const v = byDayVisitors.get(date) ?? { total: 0, bounced: 0, traded: 0 }
+    return { date, bounced: v.bounced, traded: v.traded, total: v.total }
+  })
 
   const timeSeries = [...byDay.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
@@ -1003,7 +1102,23 @@ app.get('/api/admin/analytics', async (c) => {
     .sort((a, b) => b.count - a.count)
     .slice(0, 10)
 
-  return c.json({ timeSeries, statusBreakdown: byStatus, countryBreakdown, globePoints })
+  return c.json({
+    timeSeries,
+    statusBreakdown:   byStatus,
+    countryBreakdown,
+    globePoints,
+    bounceSeries,
+    totalVisitors,
+    bouncedVisitors,
+    totalTraders:      uniqueTraders.size,
+    // Active today = unique wallets with any tx today
+    activeToday: new Set(
+      txs
+        .filter(t => (t as { created_at: string }).created_at.slice(0, 10) === new Date().toISOString().slice(0, 10))
+        .map(t => (t as { wallet_address?: string }).wallet_address)
+        .filter(Boolean)
+    ).size,
+  })
 })
 
 // GET /treasury/status — ops health check

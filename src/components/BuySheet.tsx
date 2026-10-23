@@ -145,9 +145,10 @@ export default function BuySheet({
     try {
       await loadFlwSdk()
 
+      const sid = sessionStorage.getItem('15m-sid') ?? ''
       const initRes  = await fetch('/api/flw/initialize', {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-session-id': sid },
         body:    JSON.stringify({ amount: parsedNgn, walletAddress, email: customerEmail }),
       })
       const initBody = await initRes.json() as FlwInitResponse & { error?: string }

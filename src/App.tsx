@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { isAddress } from 'viem'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ShoppingCart, Wallet, Loader2, ArrowDown, Sun, Moon } from 'lucide-react'
@@ -29,12 +29,23 @@ function useDarkMode(): [boolean, () => void] {
   return [dark, () => setDark(d => !d)]
 }
 
+// ── Anonymous visitor session ID (persisted in sessionStorage) ────────────────
+function getSessionId(): string {
+  let id = sessionStorage.getItem('15m-sid')
+  if (!id) {
+    id = Math.random().toString(36).slice(2) + Date.now().toString(36)
+    sessionStorage.setItem('15m-sid', id)
+  }
+  return id
+}
+
 export default function App() {
   const [buyOpen,      setBuyOpen]     = useState(false)
   const [usdcRate,     setUsdcRate]    = useState(FALLBACK_RATE)
   const [ngnInput,     setNgnInput]    = useState('')
   const [walletInput,  setWalletInput] = useState('')
   const [dark, toggleDark]             = useDarkMode()
+  const sessionPinged = useRef(false)
 
   const parsedNgn    = parseInt(ngnInput.replace(/,/g, ''), 10) || 0
   const hasAmount    = parsedNgn >= 500
@@ -50,6 +61,18 @@ export default function App() {
       .then(r => r.json() as Promise<{ ngnPerUsdc?: number }>)
       .then(d => { if (typeof d.ngnPerUsdc === 'number') setUsdcRate(d.ngnPerUsdc) })
       .catch(() => {})
+  }, [])
+
+  // Fire-and-forget visitor ping — once per browser session
+  useEffect(() => {
+    if (sessionPinged.current) return
+    sessionPinged.current = true
+    const sid = getSessionId()
+    void fetch('/api/visitors/ping', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: sid, traded: false }),
+    }).catch(() => {})
   }, [])
 
   const handleNgnKey = (raw: string) => {

@@ -162,8 +162,9 @@ export default function AdminDashboard({ token, onSignOut }: { token: string; on
   }, [token])
 
   // ── Fetch disputes ─────────────────────────────────────────────────────────
+  // Uses special ?status=disputes which returns failed + verified/delivering from both DB and disk
   const fetchDisputes = useCallback(async () => {
-    const res = await fetch('/api/admin/transactions?status=failed&limit=50', {
+    const res = await fetch('/api/admin/transactions?status=disputes', {
       headers: { Authorization: `Bearer ${token}` },
     })
     if (res.ok) { const json = await res.json() as { data: TxRow[] }; setDisputes(json.data ?? []) }
